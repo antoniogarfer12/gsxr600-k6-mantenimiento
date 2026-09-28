@@ -1,0 +1,16 @@
+{
+  "name": "GSX-R Garage · Mantenimiento GSX-R 600 K6",
+  "short_name": "GSX-R Garage",
+  "description": "Historial y plan de mantenimiento de la Suzuki GSX-R 600 K6 con guías y pares de apriete.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a0e16",
+  "theme_color": "#0a0e16",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
