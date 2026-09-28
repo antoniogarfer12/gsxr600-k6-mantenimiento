@@ -7,18 +7,31 @@
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
   // ---------- Estado ----------
+  const DEFAULT_REMINDERS = { enabled: false, kmBefore: 500, daysBefore: 30, odoDays: 14 };
+  const isISODate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
   let state = load();
   let planFilter = 'all';
 
+  // readings: lecturas del cuentakilómetros ({ date, km }) para estimar el ritmo de uso
+  function normalize(data) {
+    const r = { ...DEFAULT_REMINDERS, ...(data.reminders || {}) };
+    for (const k of ['kmBefore', 'daysBefore', 'odoDays']) r[k] = Math.max(0, Number(r[k]) || 0);
+    r.enabled = !!r.enabled;
+    return {
+      odometer: Number(data.odometer) || 0,
+      entries: Array.isArray(data.entries) ? data.entries : [],
+      readings: Array.isArray(data.readings)
+        ? data.readings.filter((x) => x && isISODate(x.date) && Number.isFinite(Number(x.km))).map((x) => ({ date: x.date, km: Number(x.km) }))
+        : [],
+      reminders: r,
+    };
+  }
   function load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const data = JSON.parse(raw);
-        return { odometer: Number(data.odometer) || 0, entries: Array.isArray(data.entries) ? data.entries : [] };
-      }
+      if (raw) return normalize(JSON.parse(raw));
     } catch (e) { /* datos corruptos o almacenamiento bloqueado */ }
-    return { odometer: 0, entries: [] };
+    return normalize({});
   }
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -30,8 +43,12 @@
   const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   const parseDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
   const fmtDate = (iso) => { const d = parseDate(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
-  const todayISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+  const todayISO = () => isoOf(new Date());
+  const pad = (n) => String(n).padStart(2, '0');
+  const isoOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const addMonths = (iso, months) => { const d = parseDate(iso); d.setMonth(d.getMonth() + months); return d; };
+  const addDays = (d, days) => { const x = new Date(d); x.setDate(x.getDate() + days); return x; };
+  const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
   const daysBetween = (a, b) => Math.round((b - a) / 86400000);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -55,6 +72,36 @@
     return Math.max(state.odometer || 0, maxEntry);
   }
 
+  // Lecturas de km (mantenimientos + actualizaciones del cuentakilómetros) ordenadas por fecha
+  function kmPoints() {
+    return [...state.entries.map((e) => ({ date: e.date, km: Number(e.km) || 0 })), ...state.readings]
+      .sort((a, b) => a.date.localeCompare(b.date) || a.km - b.km);
+  }
+  const lastPoint = () => kmPoints().pop() || null;
+
+  // Km al día según el último año de lecturas (null si no hay datos suficientes)
+  function ridingRate() {
+    const pts = kmPoints();
+    if (pts.length < 2) return null;
+    const last = pts[pts.length - 1];
+    const from = addMonths(last.date, -12);
+    const first = pts.find((p) => parseDate(p.date) >= from);
+    const days = daysBetween(parseDate(first.date), parseDate(last.date));
+    const km = last.km - first.km;
+    return days >= 14 && km > 0 ? km / days : null;
+  }
+
+  // Fecha aproximada en la que se llegará a unos km, a tu ritmo
+  function estimateDate(targetKm, rate = ridingRate()) {
+    const last = lastPoint();
+    if (!rate || !last) return null;
+    const today = startOfToday();
+    const remaining = targetKm - currentKm();
+    if (remaining <= 0) return today;
+    const d = addDays(parseDate(last.date), Math.ceil(remaining / rate));
+    return d < today ? today : d;
+  }
+
   // Última vez que se hizo una tarea (incluye tareas que la "resetean")
   function lastDone(taskId) {
     const resetters = TASKS.filter((t) => t.resets && t.resets.includes(taskId)).map((t) => t.id);
@@ -68,11 +115,11 @@
   }
 
   // Calcula el estado de una tarea
-  function statusOf(t) {
+  function statusOf(t, rate = ridingRate()) {
     const km = currentKm();
     const last = lastDone(t.id);
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const s = { task: t, last, known: !!last, nextKm: null, remainingKm: null, nextDate: null, remainingDays: null, progress: 0, score: 1 };
+    const today = startOfToday();
+    const s = { task: t, last, known: !!last, nextKm: null, remainingKm: null, nextDate: null, remainingDays: null, estDate: null, progress: 0, score: 1 };
     const ratios = [];
 
     if (t.km) {
@@ -83,6 +130,7 @@
         s.nextKm = km < first ? first : Math.ceil(km / t.km) * t.km;
       }
       s.remainingKm = s.nextKm - km;
+      s.estDate = estimateDate(s.nextKm, rate);
       ratios.push(s.remainingKm / t.km);
     }
     if (t.months) {
@@ -100,8 +148,8 @@
       s.score = 0.25; // sólo por tiempo y sin registro: pedir que se registre
     }
 
-    const kmSoon = s.remainingKm !== null && s.remainingKm <= Math.max(500, t.km * 0.1);
-    const daySoon = s.remainingDays !== null && s.remainingDays <= 30;
+    const kmSoon = s.remainingKm !== null && s.remainingKm <= state.reminders.kmBefore;
+    const daySoon = s.remainingDays !== null && s.remainingDays <= state.reminders.daysBefore;
     if ((s.remainingKm !== null && s.remainingKm < 0) || (s.remainingDays !== null && s.remainingDays < 0)) s.level = 'overdue';
     else if (kmSoon || daySoon) s.level = 'soon';
     else if (!ratios.length) s.level = 'unknown';
@@ -109,7 +157,7 @@
     return s;
   }
 
-  const allStatuses = () => TASKS.map(statusOf).sort((a, b) => a.score - b.score);
+  const allStatuses = () => { const rate = ridingRate(); return TASKS.map((t) => statusOf(t, rate)).sort((a, b) => a.score - b.score); };
 
   function dueText(s) {
     const parts = [];
@@ -155,7 +203,8 @@
       }
       const meta = [];
       if (top.nextKm !== null) meta.push(`A los ${fmtKm(top.nextKm)} km`);
-      if (top.nextDate) meta.push(`${top.remainingDays < 0 ? 'vencía el' : 'antes del'} ${fmtDate(top.nextDate.toISOString().slice(0, 10))}`);
+      if (top.nextDate) meta.push(`${top.remainingDays < 0 ? 'vencía el' : 'antes del'} ${fmtDate(isoOf(top.nextDate))}`);
+      if (top.estDate && top.remainingKm > 0) meta.push(`≈ ${fmtDate(isoOf(top.estDate))} a tu ritmo`);
       if (!top.known) meta.push('estimado según plan del fabricante');
 
       // Otras tareas que coinciden (aprovechar el mismo día)
@@ -184,6 +233,35 @@
       <div class="stat ok"><b>${count('ok')}</b><span>Al día</span></div>`;
 
     $('#upcoming').innerHTML = list.slice(0, 8).map(taskRow).join('');
+    renderReminderBar();
+  }
+
+  // Barra de recordatorios y aviso de km sin actualizar
+  function renderReminderBar() {
+    const R = state.reminders;
+    const last = lastPoint();
+    const rate = ridingRate();
+    const staleDays = last ? daysBetween(parseDate(last.date), startOfToday()) : 0;
+    let html = '';
+    if (R.odoDays > 0 && last && staleDays >= R.odoDays) {
+      html += `
+        <div class="nudge">
+          <span>📍 Hace ${fmtDays(staleDays)} que no actualizas los kilómetros. ¿Cuántos llevas?</span>
+          <button class="btn btn-primary" data-action="odometer">Actualizar</button>
+        </div>`;
+    }
+    const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+    const status = !R.enabled ? 'Desactivados' : perm === 'granted' ? 'Activados' : 'Sin permiso';
+    html += `
+      <button class="reminder-bar ${R.enabled && perm === 'granted' ? 'on' : ''}" data-action="reminders">
+        <span class="bell">🔔</span>
+        <span class="reminder-text">
+          <b>Recordatorios · ${status}</b>
+          <span class="hint">Aviso ${fmtKm(R.kmBefore)} km o ${R.daysBefore} días antes${rate ? ` · tu ritmo ~${fmtKm(rate * 30.4)} km/mes` : ''}</span>
+        </span>
+        <span class="chev" aria-hidden="true">›</span>
+      </button>`;
+    $('#reminders').innerHTML = html;
   }
 
   function taskRow(s) {
@@ -252,7 +330,7 @@
     const filters = [['all', 'Todas', null], ...Object.entries(CATEGORIES).map(([k, c]) => [k, c.label, c.color])];
     $('#planFilters').innerHTML = filters.map(([k, label, color]) =>
       `<button class="chip ${planFilter === k ? 'active' : ''}" data-filter="${k}">${color ? `<span class="cat-dot" style="background:${color}"></span>` : ''}${label}</button>`).join('');
-    const list = TASKS.filter((t) => planFilter === 'all' || t.category === planFilter).map(statusOf);
+    const list = TASKS.filter((t) => planFilter === 'all' || t.category === planFilter).map((t) => statusOf(t));
     $('#planList').innerHTML = list.map(taskRow).join('');
   }
 
@@ -281,6 +359,7 @@
     renderHome();
     renderHistory();
     renderPlan();
+    syncReminders();
   }
 
   // ---------- Modal ----------
@@ -307,7 +386,7 @@
     const lastSub = s.last ? fmtDate(s.last.date) : 'sin registro';
     let nextTxt = '—', nextSub = '';
     if (s.nextKm !== null) { nextTxt = `${fmtKm(s.nextKm)} km`; nextSub = dueText(s); }
-    else if (s.nextDate) { nextTxt = fmtDate(s.nextDate.toISOString().slice(0, 10)); nextSub = dueText(s); }
+    else if (s.nextDate) { nextTxt = fmtDate(isoOf(s.nextDate)); nextSub = dueText(s); }
     else if (t.months) { nextSub = 'Registra la última vez que lo hiciste'; }
 
     openModal(`
@@ -322,6 +401,7 @@
         <div><span>Última vez</span><b>${lastTxt}</b><div class="hint">${lastSub}</div></div>
         <div><span>Próxima</span><b>${nextTxt}</b><div class="hint">${esc(nextSub)}${!s.known && s.nextKm !== null ? ' (estimado)' : ''}</div></div>
       </div>
+      ${s.estDate && s.remainingKm > 0 ? `<p class="hint est-line">📈 A tu ritmo (~${fmtKm(ridingRate() * 30.4)} km/mes) llegarás a los ${fmtKm(s.nextKm)} km hacia el <b>${fmtDate(isoOf(s.estDate))}</b>.</p>` : ''}
 
       ${t.torques.length ? `
       <div class="guide-section">
@@ -350,7 +430,10 @@
       ${t.tips ? `<div class="guide-section"><div class="tip">💡 ${esc(t.tips)}</div></div>` : ''}
 
       <div class="guide-footer">
-        <button class="btn btn-primary btn-block" data-action="new-entry" data-preset="${t.id}">✓ Marcar como hecho</button>
+        <div class="footer-row">
+          <button class="btn btn-primary btn-block" data-action="new-entry" data-preset="${t.id}">✓ Marcar como hecho</button>
+          ${calendarEvents(t.id).length ? `<button class="btn btn-cal" data-action="ics" data-task="${t.id}" title="Añadir al calendario" aria-label="Añadir al calendario">📅</button>` : ''}
+        </div>
       </div>
     `);
   }
@@ -442,10 +525,223 @@
       if (!Number.isFinite(v) || v < 0) return ($('#odoError').textContent = 'Introduce un número válido.');
       if (v < maxEntry) return ($('#odoError').textContent = `Tienes un mantenimiento registrado a ${fmtKm(maxEntry)} km; el cuentakilómetros no puede ser menor.`);
       state.odometer = v;
+      const today = todayISO();
+      state.readings = [...state.readings.filter((r) => r.date !== today), { date: today, km: v }].slice(-300);
       save();
       closeModal();
       renderAll();
       toast('Kilómetros actualizados');
+    });
+  }
+
+  // ---------- Recordatorios ----------
+  // Calcula cuándo avisar de cada tarea: X días antes de la fecha límite o X km antes
+  // (convertidos en fecha según tu ritmo de uso). Lo lee también el service worker.
+  function buildSchedule() {
+    const R = state.reminders;
+    const now = Date.now();
+    const items = [];
+    for (const s of allStatuses()) {
+      const ats = [];
+      if (s.nextDate) ats.push(addDays(s.nextDate, -R.daysBefore).setHours(10));
+      if (s.nextKm !== null) {
+        if (s.remainingKm <= R.kmBefore) ats.push(now);
+        else {
+          const d = estimateDate(s.nextKm - R.kmBefore);
+          if (d) ats.push(d.setHours(10));
+        }
+      }
+      if (!ats.length) continue;
+      const when = [s.nextKm !== null ? `a los ${fmtKm(s.nextKm)} km` : '', s.nextDate ? `antes del ${fmtDate(isoOf(s.nextDate))}` : ''].filter(Boolean).join(' o ');
+      items.push({
+        key: `task:${s.task.id}:${s.nextKm ?? ''}:${s.nextDate ? isoOf(s.nextDate) : ''}`,
+        kind: 'task', at: Math.min(...ats), title: s.task.name, body: `Toca ${when}.`,
+      });
+    }
+    const last = lastPoint();
+    if (R.odoDays > 0 && last) {
+      items.push({
+        key: `odo:${last.date}:${last.km}`, kind: 'odo', at: addDays(parseDate(last.date), R.odoDays).setHours(10),
+        title: '🏍️ ¿Cuántos km llevas?', body: 'Actualiza el cuentakilómetros para que los avisos de mantenimiento sean precisos.',
+      });
+    }
+    return items;
+  }
+
+  const canNotify = () => state.reminders.enabled && 'Notification' in window && Notification.permission === 'granted';
+
+  async function showNotification(m) {
+    const opts = { ...NOTIFICATION_DEFAULTS, body: m.body, tag: m.tag };
+    const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    if (reg) return reg.showNotification(m.title, opts);
+    new Notification(m.title, opts); // sin service worker (p. ej. abriendo el archivo en local)
+  }
+
+  // Guarda el calendario de avisos y muestra los que ya tocan.
+  // Con la app abierta no se avisa de los km: ya se ve el aviso en pantalla.
+  let syncing = Promise.resolve();
+  function syncReminders() {
+    syncing = syncing.then(async () => {
+      try {
+        await kv.set('schedule', state.reminders.enabled ? buildSchedule() : []);
+        if (!canNotify()) return;
+        const due = await takeDueReminders();
+        for (const m of reminderMessages(due.filter((r) => r.kind === 'task'))) await showNotification(m);
+      } catch (e) { /* IndexedDB o notificaciones no disponibles */ }
+    });
+    return syncing;
+  }
+
+  // Comprobación en segundo plano: sólo Chrome/Edge con la app instalada
+  async function updateBackgroundSync() {
+    try {
+      const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+      if (!reg || !('periodicSync' in reg)) return false;
+      if (!canNotify()) { await reg.periodicSync.unregister('gsxr-reminders'); return false; }
+      const perm = await navigator.permissions.query({ name: 'periodic-background-sync' });
+      if (perm.state !== 'granted') return false;
+      await reg.periodicSync.register('gsxr-reminders', { minInterval: 12 * 3600 * 1000 });
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // Tareas con fecha (límite o estimada por km) para el calendario
+  function calendarEvents(onlyId) {
+    const today = startOfToday();
+    const limit = addMonths(isoOf(today), 12);
+    return allStatuses()
+      .filter((s) => !onlyId || s.task.id === onlyId)
+      .map((s) => {
+        const dates = [s.nextDate, s.estDate].filter(Boolean);
+        if (!dates.length) return null;
+        const due = new Date(Math.max(today, Math.min(...dates)));
+        return due <= limit ? { s, due } : null;
+      })
+      .filter(Boolean);
+  }
+
+  function downloadICS(events, filename) {
+    const R = state.reminders;
+    const d8 = (d) => isoOf(d).replace(/-/g, '');
+    const txt = (s) => s.replace(/[\\;,]/g, (c) => '\\' + c).replace(/\n/g, '\\n');
+    // Las líneas de un .ics no deben superar 75 caracteres
+    const fold = (line) => {
+      const chars = Array.from(line);
+      const out = [];
+      for (let i = 0; i < chars.length; i += 70) out.push((i ? ' ' : '') + chars.slice(i, i + 70).join(''));
+      return out.join('\r\n');
+    };
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+    // Aviso a las 9:00, X días antes (en eventos de día completo el inicio es a las 0:00).
+    // Si queda menos margen, el aviso es a las 9:00 de mañana (o de hoy si ya toca).
+    const today = startOfToday();
+    const trigger = (due) => {
+      const lead = Math.min(R.daysBefore, daysBetween(today, due) - 1);
+      return lead > 0 ? `-P${lead - 1}DT15H` : 'PT9H';
+    };
+    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//GSX-R Garage//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
+    for (const { s, due } of events) {
+      const t = s.task;
+      const desc = [
+        intervalText(t) + '.',
+        s.nextKm !== null ? `Toca a los ${fmtKm(s.nextKm)} km${s.nextDate ? '' : ' (fecha estimada según tu ritmo de uso)'}.` : '',
+        s.nextDate ? `Fecha límite: ${fmtDate(isoOf(s.nextDate))}.` : '',
+        'Guía, herramientas y pares de apriete en GSX-R Garage.',
+      ].filter(Boolean).join('\n');
+      lines.push(
+        'BEGIN:VEVENT',
+        `UID:gsxr-${t.id}@gsxr-garage`,
+        `DTSTAMP:${stamp}`,
+        `DTSTART;VALUE=DATE:${d8(due)}`,
+        `DTEND;VALUE=DATE:${d8(addDays(due, 1))}`,
+        `SUMMARY:${txt(`🏍️ ${t.name}`)}`,
+        `DESCRIPTION:${txt(desc)}`,
+        'TRANSP:TRANSPARENT',
+        'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${txt(t.name)}`, `TRIGGER:${trigger(due)}`, 'END:VALARM',
+        'END:VEVENT',
+      );
+    }
+    lines.push('END:VCALENDAR');
+    const blob = new Blob([lines.map(fold).join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  function openReminders() {
+    const R = state.reminders;
+    const rate = ridingRate();
+    const supported = 'Notification' in window;
+    const perm = supported ? Notification.permission : 'unsupported';
+    const permHint = !supported
+      ? 'Este navegador no admite notificaciones. En iPhone instala la app en la pantalla de inicio (iOS 16.4 o superior) o usa el calendario.'
+      : perm === 'denied'
+        ? 'Las notificaciones están bloqueadas: actívalas en los ajustes del navegador para este sitio.'
+        : 'Te aviso al abrir la app y, con la app instalada en Android, también en segundo plano.';
+    const events = calendarEvents();
+
+    openModal(`
+      <h2>Recordatorios</h2>
+      <p class="muted">Te aviso cuando se acerque un mantenimiento, por kilómetros o por tiempo, y te recuerdo apuntar los km.</p>
+      <form class="form" id="remForm" novalidate>
+        <label class="switch-row">
+          <input type="checkbox" id="rEnabled" ${R.enabled && perm === 'granted' ? 'checked' : ''} ${supported ? '' : 'disabled'} />
+          <span class="switch" aria-hidden="true"></span>
+          <span><b>Notificaciones en este dispositivo</b><span class="hint">${permHint}</span></span>
+        </label>
+        <div class="two">
+          <div class="field"><label for="rKm">Avisar con (km)</label><input id="rKm" type="number" inputmode="numeric" min="0" step="100" value="${R.kmBefore}" /></div>
+          <div class="field"><label for="rDays">Avisar con (días)</label><input id="rDays" type="number" inputmode="numeric" min="0" max="365" step="1" value="${R.daysBefore}" /></div>
+        </div>
+        <div class="field">
+          <label for="rOdo">Recordar actualizar los km cada (días)</label>
+          <input id="rOdo" type="number" inputmode="numeric" min="0" max="365" step="1" value="${R.odoDays}" />
+          <div class="hint" style="margin-top:6px">0 = no recordar.</div>
+        </div>
+        <div class="rate-box">
+          ${rate
+            ? `📈 Tu ritmo: <b>~${fmtKm(rate * 30.4)} km/mes</b>. Lo uso para calcular la fecha aproximada de los mantenimientos por km.`
+            : '📈 Actualiza los km de vez en cuando (al menos con dos semanas de diferencia) y calcularé tu ritmo para estimar las fechas de los mantenimientos por km.'}
+        </div>
+        <div class="error" id="remError"></div>
+        <button type="submit" class="btn btn-primary btn-block">Guardar</button>
+      </form>
+
+      <div class="guide-section">
+        <h3>📅 Calendario</h3>
+        <p class="muted">La opción más fiable en cualquier móvil (también iPhone): añade los próximos mantenimientos a tu calendario, con alarma los días de antelación que hayas elegido. Si cambian las fechas, vuelve a añadirlos y se actualizarán.</p>
+        ${events.length
+          ? `<button class="btn btn-block" data-action="ics-all">📅 Añadir al calendario (${events.length})</button>`
+          : '<p class="hint">Aún no hay fechas que añadir: registra mantenimientos o actualiza los km un par de veces.</p>'}
+      </div>
+      ${canNotify() ? '<div class="guide-section"><button class="btn btn-ghost btn-block" data-action="test-notif">Probar notificación</button></div>' : ''}
+    `);
+
+    $('#remForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const err = $('#remError');
+      const num = (id, max) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) && v >= 0 && v <= max ? v : null; };
+      const kmBefore = num('#rKm', 20000);
+      const daysBefore = num('#rDays', 365);
+      const odoDays = num('#rOdo', 365);
+      if (kmBefore === null || daysBefore === null || odoDays === null) return (err.textContent = 'Revisa los valores: deben ser números positivos.');
+
+      let enabled = $('#rEnabled').checked;
+      if (enabled && Notification.permission !== 'granted') {
+        const result = await Notification.requestPermission();
+        if (result !== 'granted') {
+          $('#rEnabled').checked = false;
+          return (err.textContent = 'No has dado permiso para las notificaciones. Puedes usar el calendario.');
+        }
+      }
+      state.reminders = { enabled, kmBefore, daysBefore, odoDays };
+      save();
+      closeModal();
+      renderAll();
+      const bg = await updateBackgroundSync();
+      toast(enabled ? (bg ? '🔔 Recordatorios activados (también en segundo plano)' : '🔔 Recordatorios activados') : 'Ajustes guardados');
     });
   }
 
@@ -486,6 +782,17 @@
     }
     if (el.dataset.action === 'new-entry') return openEntryForm(null, el.dataset.preset ? el.dataset.preset.split(',') : []);
     if (el.dataset.action === 'odometer') return openOdometer();
+    if (el.dataset.action === 'reminders') return openReminders();
+    if (el.dataset.action === 'ics' || el.dataset.action === 'ics-all') {
+      const events = calendarEvents(el.dataset.task);
+      if (!events.length) return toast('No hay fechas que añadir todavía');
+      downloadICS(events, el.dataset.task ? `gsxr-${el.dataset.task}.ics` : 'gsxr-mantenimientos.ics');
+      return toast('📅 Abre el archivo descargado para añadirlo a tu calendario');
+    }
+    if (el.dataset.action === 'test-notif') {
+      return showNotification({ tag: 'gsxr-test', title: '🏍️ GSX-R Garage', body: 'Así te llegarán los avisos de mantenimiento.' })
+        .catch(() => toast('No se pudo mostrar la notificación'));
+    }
   });
 
   $('#odoBtn').addEventListener('click', openOdometer);
@@ -511,7 +818,8 @@
         .filter((e) => e && Number.isFinite(Number(e.km)) && /^\d{4}-\d{2}-\d{2}$/.test(e.date) && Array.isArray(e.tasks))
         .map((e) => ({ id: e.id || uid(), km: Number(e.km), date: e.date, tasks: e.tasks.filter((id) => TASK_MAP[id]), cost: e.cost ?? '', notes: String(e.notes || '') }));
       if (!confirm(`Se importarán ${entries.length} registros y se reemplazarán los datos actuales. ¿Continuar?`)) return;
-      state = { odometer: Number(data.odometer) || 0, entries };
+      // Los permisos de notificación son de cada dispositivo: se mantiene el ajuste actual
+      state = normalize({ ...data, entries, reminders: { ...data.reminders, enabled: state.reminders.enabled } });
       save(); renderAll(); toast('Datos importados');
     } catch (e) {
       toast('El archivo no es una copia válida');
@@ -521,7 +829,7 @@
   });
   $('#resetBtn').addEventListener('click', () => {
     if (confirm('¿Borrar TODO el historial y los kilómetros? Esta acción no se puede deshacer.')) {
-      state = { odometer: 0, entries: [] };
+      state = normalize({ reminders: state.reminders });
       save(); renderAll(); toast('Datos borrados');
     }
   });
@@ -532,6 +840,9 @@
   try { const v = sessionStorage.getItem('gsxr-view'); if (v) showView(v); } catch (e) { /* ignorar */ }
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js').then(updateBackgroundSync).catch(() => {});
   }
+
+  // Al volver a la app (p. ej. al día siguiente) se recalculan los avisos
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') renderAll(); });
 })();

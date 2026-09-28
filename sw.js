@@ -1,10 +1,13 @@
-// Service worker: permite usar la app sin conexión
-const CACHE = 'gsxr-garage-v1';
+// Service worker: permite usar la app sin conexión y avisa de los mantenimientos
+importScripts('js/store.js');
+
+const CACHE = 'gsxr-garage-v2';
 const ASSETS = [
   './',
   'index.html',
   'css/styles.css',
   'js/data.js',
+  'js/store.js',
   'js/app.js',
   'manifest.webmanifest',
   'icons/icon.svg',
@@ -37,5 +40,25 @@ self.addEventListener('fetch', (e) => {
         return res;
       })
       .catch(() => caches.match(e.request).then((r) => r || caches.match('index.html')))
+  );
+});
+
+// Comprobación periódica en segundo plano (Chrome/Android con la app instalada)
+self.addEventListener('periodicsync', (e) => {
+  if (e.tag === 'gsxr-reminders') e.waitUntil(checkReminders());
+});
+
+async function checkReminders() {
+  const due = await takeDueReminders();
+  for (const m of reminderMessages(due)) {
+    await self.registration.showNotification(m.title, { ...NOTIFICATION_DEFAULTS, body: m.body, tag: m.tag });
+  }
+}
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((list) => (list.length ? list[0].focus() : self.clients.openWindow('./')))
   );
 });
