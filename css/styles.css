@@ -385,3 +385,8 @@ main { max-width: 900px; margin: 0 auto; padding: 16px; }
   .odo { padding: 5px 10px; }
   .odo-label { font-size: .56rem; }
 }
+@media (max-width: 360px) {
+  .brand-title { font-size: 1.25rem; }
+  .brand .caret { margin-left: 4px; }
+  .odo-label { display: none; }
+}

@@ -1,7 +1,7 @@
 {
   "name": "Garage · Mantenimiento de motos",
   "short_name": "Garage",
-  "description": "Historial y plan de mantenimiento de tus motos (GSX-R 600 K6, 1290 Super Duke R, 250 EXC) con guías y pares de apriete.",
+  "description": "Historial y plan de mantenimiento de tus motos (GSX-R 600, DR-Z 400, 1290 Super Duke R, 1290 Super Adventure S, 250 EXC) con guías y pares de apriete.",
   "lang": "es",
   "start_url": "./",
   "scope": "./",
