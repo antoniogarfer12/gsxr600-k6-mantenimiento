@@ -1,7 +1,7 @@
 // Service worker: permite usar la app sin conexión y avisa de los mantenimientos
 importScripts('js/store.js');
 
-const CACHE = 'gsxr-garage-v4';
+const CACHE = 'gsxr-garage-v5';
 const ASSETS = [
   './',
   'index.html',
@@ -9,6 +9,7 @@ const ASSETS = [
   'js/bikes/common.js',
   'js/bikes/gsxr600k6.js',
   'js/bikes/drz400.js',
+  'js/bikes/yzfr6.js',
   'js/bikes/superduke1290r.js',
   'js/bikes/superadventure1290s.js',
   'js/bikes/exc250.js',

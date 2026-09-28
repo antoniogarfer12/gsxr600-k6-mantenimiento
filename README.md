@@ -6,6 +6,7 @@ Aplicación web para llevar el mantenimiento de varias motos:
 |---|---|---|
 | **Suzuki GSX-R 600 K6** | 2006 – 2007 | kilómetros |
 | **Suzuki DR-Z 400 S/SM** | 2006 | kilómetros |
+| **Yamaha YZF-R6** | 2004 | kilómetros |
 | **KTM 1290 Super Duke R** | 2017 | kilómetros |
 | **KTM 1290 Super Adventure S** | 2022 | kilómetros |
 | **KTM 250 EXC 2T** | 2009 | horas de motor |
@@ -40,6 +41,7 @@ css/styles.css               Estilos
 js/bikes/common.js           Lista de motos y categorías (formato de los datos)
 js/bikes/gsxr600k6.js        Suzuki GSX-R 600 K6: plan, guías, herramientas y pares
 js/bikes/drz400.js           Suzuki DR-Z 400 S/SM 2006
+js/bikes/yzfr6.js            Yamaha YZF-R6 2004 (5SL)
 js/bikes/superduke1290r.js   KTM 1290 Super Duke R 2017
 js/bikes/superadventure1290s.js  KTM 1290 Super Adventure S 2022
 js/bikes/exc250.js           KTM 250 EXC 2T 2009 (en horas de motor)
@@ -54,6 +56,7 @@ Para ajustar intervalos o pares de apriete, edita el archivo de la moto en `js/b
 
 - GSX-R 600 K6: manual de servicio de Suzuki.
 - DR-Z 400 S/SM 2006: manual de servicio de Suzuki DR-Z400S/SM (2000–2009).
+- YZF-R6 2004 (5SL): manual de usuario Yamaha (plan europeo y capacidades) y manual de servicio 5SL (pares y holguras).
 - 1290 Super Duke R 2017: manual de usuario oficial de KTM (plan de mantenimiento, capacidades y pares de apriete).
 - 1290 Super Adventure S 2022: manual de usuario oficial de KTM.
 - 250 EXC 2009: manual de usuario oficial de KTM 2009 para 125–300 EXC/XC, plan para **uso de ocio** (en competición los intervalos son más cortos).
