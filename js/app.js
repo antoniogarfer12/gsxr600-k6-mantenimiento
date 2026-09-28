@@ -1,45 +1,106 @@
-/* GSX-R Garage — lógica de la aplicación */
+/* Garage — lógica de la aplicación de mantenimiento de motos */
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'gsxr600k6-garage-v1';
+  const STORAGE_KEY = 'revimotos-garage-v2';
+  const LEGACY_KEY = 'gsxr600k6-garage-v1'; // versión con una sola moto (GSX-R)
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+  // Textos que dependen de la unidad de la moto (km o horas de motor)
+  const UNITS = {
+    km: { short: 'km', long: 'kilómetros', meter: 'Cuentakilómetros', perMonth: 'km/mes', decimals: 0, placeholder: 'ej. 32150', howMany: '¿Cuántos km lleva' },
+    h: { short: 'h', long: 'horas', meter: 'Horas de motor', perMonth: 'h/mes', decimals: 1, placeholder: 'ej. 85,5', howMany: '¿Cuántas horas lleva' },
+  };
+  const BIKE_MAP = Object.fromEntries(BIKES.map((b) => [b.id, { ...b, taskMap: Object.fromEntries(b.tasks.map((t) => [t.id, t])) }]));
+
   // ---------- Estado ----------
-  const DEFAULT_REMINDERS = { enabled: false, kmBefore: 500, daysBefore: 30, odoDays: 14 };
+  // store: { current, bikes: { [id]: { odometer, entries, readings, before } }, reminders }
+  // En cada moto, "km" de registros y lecturas va en su unidad (km u horas).
+  // readings: lecturas del contador ({ date, km }) para estimar el ritmo de uso.
+  const DEFAULT_REMINDERS = { enabled: false, daysBefore: 30, odoDays: 14 };
   const isISODate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-  let state = load();
+  let store = load();
+  let bike, state, U; // moto seleccionada, sus datos y su unidad
+  setBike(store.current);
   let planFilter = 'all';
 
-  // readings: lecturas del cuentakilómetros ({ date, km }) para estimar el ritmo de uso
-  function normalize(data) {
-    const r = { ...DEFAULT_REMINDERS, ...(data.reminders || {}) };
-    for (const k of ['kmBefore', 'daysBefore', 'odoDays']) r[k] = Math.max(0, Number(r[k]) || 0);
-    r.enabled = !!r.enabled;
+  function normalizeBike(data, def) {
+    const before = Number(data.before);
     return {
       odometer: Number(data.odometer) || 0,
       entries: Array.isArray(data.entries) ? data.entries : [],
       readings: Array.isArray(data.readings)
         ? data.readings.filter((x) => x && isISODate(x.date) && Number.isFinite(Number(x.km))).map((x) => ({ date: x.date, km: Number(x.km) }))
         : [],
-      reminders: r,
+      before: Number.isFinite(before) && before >= 0 ? before : def.before,
     };
+  }
+  function normalizeStore(data) {
+    const r = { ...DEFAULT_REMINDERS, ...(data.reminders || {}) };
+    for (const k of ['daysBefore', 'odoDays']) r[k] = Math.max(0, Number(r[k]) || 0);
+    const bikes = Object.fromEntries(BIKES.map((b) => [b.id, normalizeBike((data.bikes || {})[b.id] || {}, b)]));
+    return {
+      current: BIKE_MAP[data.current] ? data.current : BIKES[0].id,
+      bikes,
+      reminders: { enabled: !!r.enabled, daysBefore: r.daysBefore, odoDays: r.odoDays },
+    };
+  }
+  // Datos de la versión con una sola moto: eran todos de la GSX-R
+  // (declaración de función: load() la usa antes de llegar a esta línea)
+  function fromLegacy(d) {
+    return normalizeStore({
+      current: 'gsxr600k6',
+      bikes: { gsxr600k6: { ...d, before: d.reminders && d.reminders.kmBefore } },
+      reminders: d.reminders,
+    });
   }
   function load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return normalize(JSON.parse(raw));
+      if (raw) return normalizeStore(JSON.parse(raw));
+      const legacy = localStorage.getItem(LEGACY_KEY);
+      if (legacy) return fromLegacy(JSON.parse(legacy));
     } catch (e) { /* datos corruptos o almacenamiento bloqueado */ }
-    return normalize({});
+    return normalizeStore({});
   }
   function save() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
     catch (e) { toast('No se pudo guardar en este navegador'); }
   }
+  function setBike(id) {
+    store.current = id;
+    bike = BIKE_MAP[id];
+    state = store.bikes[id];
+    U = UNITS[bike.unit];
+  }
+  // Ejecuta fn con otra moto seleccionada (para avisos y calendario de todas las motos)
+  function withBike(id, fn) {
+    const prev = store.current;
+    setBike(id);
+    try { return fn(); } finally { setBike(prev); }
+  }
+  const hasData = (b) => b.entries.length > 0 || b.odometer > 0;
 
   // ---------- Utilidades ----------
-  const fmtKm = (n) => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  // Número en la unidad de la moto: miles con punto y, en horas, un decimal con coma (85,5)
+  function fmtKm(n) {
+    const f = 10 ** U.decimals;
+    const [int, dec] = (Math.round(n * f) / f).toFixed(U.decimals).split('.');
+    const out = int.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return dec && Number(dec) ? `${out},${dec}` : out;
+  }
+  // Valor del contador escrito por el usuario: en km se ignoran los puntos de miles
+  // ("32.150"); en horas se acepta coma o punto decimal ("85,5").
+  function parseCounter(v) {
+    const txt = String(v).replace(/\s/g, '');
+    if (!/^\d[\d.,]*$/.test(txt)) return NaN;
+    if (!U.decimals) return parseInt(txt.replace(/[.,]/g, ''), 10);
+    const n = parseFloat(txt.replace(',', '.'));
+    return Math.round(n * 10) / 10;
+  }
+  const fmtInput = (n) => (U.decimals ? String(n).replace('.', ',') : String(Math.round(n)));
+  const cap = (s) => s[0].toUpperCase() + s.slice(1);
   const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   const parseDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
   const fmtDate = (iso) => { const d = parseDate(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
@@ -62,7 +123,7 @@
   }
   function intervalText(t) {
     const parts = [];
-    if (t.km) parts.push(`${fmtKm(t.km)} km`);
+    if (t.every) parts.push(`${fmtKm(t.every)} ${U.short}`);
     if (t.months) parts.push(t.months % 12 === 0 ? `${t.months / 12} año${t.months === 12 ? '' : 's'}` : `${t.months} meses`);
     return 'Cada ' + parts.join(' o ');
   }
@@ -104,7 +165,7 @@
 
   // Última vez que se hizo una tarea (incluye tareas que la "resetean")
   function lastDone(taskId) {
-    const resetters = TASKS.filter((t) => t.resets && t.resets.includes(taskId)).map((t) => t.id);
+    const resetters = bike.tasks.filter((t) => t.resets && t.resets.includes(taskId)).map((t) => t.id);
     let best = null;
     for (const e of state.entries) {
       if (e.tasks.includes(taskId) || e.tasks.some((id) => resetters.includes(id))) {
@@ -122,16 +183,16 @@
     const s = { task: t, last, known: !!last, nextKm: null, remainingKm: null, nextDate: null, remainingDays: null, estDate: null, progress: 0, score: 1 };
     const ratios = [];
 
-    if (t.km) {
+    if (t.every) {
       if (last) {
-        s.nextKm = Number(last.km) + t.km;
+        s.nextKm = Number(last.km) + t.every;
       } else {
-        const first = t.first || t.km;
-        s.nextKm = km < first ? first : Math.ceil(km / t.km) * t.km;
+        const first = t.first || t.every;
+        s.nextKm = km < first ? first : Math.ceil(km / t.every) * t.every;
       }
       s.remainingKm = s.nextKm - km;
       s.estDate = estimateDate(s.nextKm, rate);
-      ratios.push(s.remainingKm / t.km);
+      ratios.push(s.remainingKm / t.every);
     }
     if (t.months) {
       if (last) {
@@ -148,8 +209,8 @@
       s.score = 0.25; // sólo por tiempo y sin registro: pedir que se registre
     }
 
-    const kmSoon = s.remainingKm !== null && s.remainingKm <= state.reminders.kmBefore;
-    const daySoon = s.remainingDays !== null && s.remainingDays <= state.reminders.daysBefore;
+    const kmSoon = s.remainingKm !== null && s.remainingKm <= state.before;
+    const daySoon = s.remainingDays !== null && s.remainingDays <= store.reminders.daysBefore;
     if ((s.remainingKm !== null && s.remainingKm < 0) || (s.remainingDays !== null && s.remainingDays < 0)) s.level = 'overdue';
     else if (kmSoon || daySoon) s.level = 'soon';
     else if (!ratios.length) s.level = 'unknown';
@@ -157,12 +218,12 @@
     return s;
   }
 
-  const allStatuses = () => { const rate = ridingRate(); return TASKS.map((t) => statusOf(t, rate)).sort((a, b) => a.score - b.score); };
+  const allStatuses = () => { const rate = ridingRate(); return bike.tasks.map((t) => statusOf(t, rate)).sort((a, b) => a.score - b.score); };
 
   function dueText(s) {
     const parts = [];
     if (s.remainingKm !== null) {
-      parts.push(s.remainingKm < 0 ? `Pasado ${fmtKm(-s.remainingKm)} km` : `En ${fmtKm(s.remainingKm)} km`);
+      parts.push(s.remainingKm < 0 ? `Pasado ${fmtKm(-s.remainingKm)} ${U.short}` : `En ${fmtKm(s.remainingKm)} ${U.short}`);
     }
     if (s.remainingDays !== null) {
       parts.push(s.remainingDays < 0 ? `vencido hace ${fmtDays(s.remainingDays)}` : `en ${fmtDays(s.remainingDays)}`);
@@ -182,9 +243,9 @@
         <div class="empty-hero">
           <div class="empty-icon">🏍️</div>
           <h3>¡Bienvenido al garaje!</h3>
-          <p class="muted">Empieza indicando los kilómetros actuales de tu GSX-R y registrando los últimos mantenimientos que recuerdes. Con eso calcularé todo lo que toca.</p>
+          <p class="muted">Empieza indicando ${bike.unit === 'h' ? 'las horas de motor' : 'los kilómetros'} actuales de tu ${esc(bike.name)} y registrando los últimos mantenimientos que recuerdes. Con eso calcularé todo lo que toca.</p>
           <div class="row" style="justify-content:center;margin-top:14px">
-            <button class="btn btn-primary" data-action="odometer">Poner kilómetros</button>
+            <button class="btn btn-primary" data-action="odometer">Poner ${U.long}</button>
             <button class="btn" data-action="new-entry">Registrar mantenimiento</button>
           </div>
         </div>`;
@@ -192,24 +253,24 @@
       const t = top.task;
       const kicker = top.level === 'overdue' ? '⚠ Mantenimiento vencido' : top.level === 'soon' ? 'Toca pronto' : 'Próximo mantenimiento';
       let big;
-      if (top.remainingKm !== null && (top.remainingDays === null || top.remainingKm / t.km <= top.remainingDays / (t.months * 30.4))) {
+      if (top.remainingKm !== null && (top.remainingDays === null || top.remainingKm / t.every <= top.remainingDays / (t.months * 30.4))) {
         big = top.remainingKm < 0
-          ? `<div class="hero-km">+${fmtKm(-top.remainingKm)} <small>km pasado</small></div>`
-          : `<div class="hero-km">${fmtKm(top.remainingKm)} <small>km restantes</small></div>`;
+          ? `<div class="hero-km">+${fmtKm(-top.remainingKm)} <small>${U.short} pasado${bike.unit === 'h' ? 's' : ''}</small></div>`
+          : `<div class="hero-km">${fmtKm(top.remainingKm)} <small>${U.short} restantes</small></div>`;
       } else if (top.remainingDays !== null) {
         big = `<div class="hero-km">${fmtDays(top.remainingDays)} <small>${top.remainingDays < 0 ? 'de retraso' : 'restantes'}</small></div>`;
       } else {
         big = `<div class="hero-km" style="font-size:2rem">Sin registro</div>`;
       }
       const meta = [];
-      if (top.nextKm !== null) meta.push(`A los ${fmtKm(top.nextKm)} km`);
+      if (top.nextKm !== null) meta.push(`A ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(top.nextKm)} ${U.short}`);
       if (top.nextDate) meta.push(`${top.remainingDays < 0 ? 'vencía el' : 'antes del'} ${fmtDate(isoOf(top.nextDate))}`);
       if (top.estDate && top.remainingKm > 0) meta.push(`≈ ${fmtDate(isoOf(top.estDate))} a tu ritmo`);
       if (!top.known) meta.push('estimado según plan del fabricante');
 
       // Otras tareas que coinciden (aprovechar el mismo día)
       const also = list.slice(1).filter((s) =>
-        ['overdue', 'soon'].includes(s.level) || (top.nextKm !== null && s.nextKm !== null && Math.abs(s.nextKm - top.nextKm) <= 500));
+        ['overdue', 'soon'].includes(s.level) || (top.nextKm !== null && s.nextKm !== null && Math.abs(s.nextKm - top.nextKm) <= state.before));
 
       hero.innerHTML = `
         <div class="hero ${top.level === 'overdue' ? 'overdue' : top.level === 'soon' ? 'soon' : ''}">
@@ -238,7 +299,7 @@
 
   // Barra de recordatorios y aviso de km sin actualizar
   function renderReminderBar() {
-    const R = state.reminders;
+    const R = store.reminders;
     const last = lastPoint();
     const rate = ridingRate();
     const staleDays = last ? daysBetween(parseDate(last.date), startOfToday()) : 0;
@@ -246,7 +307,7 @@
     if (R.odoDays > 0 && last && staleDays >= R.odoDays) {
       html += `
         <div class="nudge">
-          <span>📍 Hace ${fmtDays(staleDays)} que no actualizas los kilómetros. ¿Cuántos llevas?</span>
+          <span>📍 Hace ${fmtDays(staleDays)} que no actualizas ${bike.unit === 'h' ? 'las horas' : 'los kilómetros'} de la ${esc(bike.short)}. ${U.howMany}?</span>
           <button class="btn btn-primary" data-action="odometer">Actualizar</button>
         </div>`;
     }
@@ -257,7 +318,7 @@
         <span class="bell">🔔</span>
         <span class="reminder-text">
           <b>Recordatorios · ${status}</b>
-          <span class="hint">Aviso ${fmtKm(R.kmBefore)} km o ${R.daysBefore} días antes${rate ? ` · tu ritmo ~${fmtKm(rate * 30.4)} km/mes` : ''}</span>
+          <span class="hint">Aviso ${fmtKm(state.before)} ${U.short} o ${R.daysBefore} días antes${rate ? ` · tu ritmo ~${fmtKm(rate * 30.4)} ${U.perMonth}` : ''}</span>
         </span>
         <span class="chev" aria-hidden="true">›</span>
       </button>`;
@@ -268,8 +329,8 @@
     const t = s.task;
     let right;
     if (s.remainingKm !== null) {
-      right = `<div class="task-left">${s.remainingKm < 0 ? '−' : ''}${fmtKm(Math.abs(s.remainingKm))} <small>km</small></div>
-               <div class="task-when">${s.remainingKm < 0 ? 'pasado' : `a los ${fmtKm(s.nextKm)}`}</div>`;
+      right = `<div class="task-left">${s.remainingKm < 0 ? '−' : ''}${fmtKm(Math.abs(s.remainingKm))} <small>${U.short}</small></div>
+               <div class="task-when">${s.remainingKm < 0 ? 'pasado' : `a ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(s.nextKm)}`}</div>`;
     } else if (s.remainingDays !== null) {
       right = `<div class="task-left">${fmtDays(s.remainingDays)}</div><div class="task-when">${s.remainingDays < 0 ? 'de retraso' : 'restantes'}</div>`;
     } else {
@@ -278,7 +339,7 @@
     const tag = s.level === 'overdue' ? '<span class="tag overdue">Vencido</span>'
       : s.level === 'soon' ? '<span class="tag soon">Pronto</span>'
       : !s.known ? '<span class="tag">Estimado</span>' : '';
-    const lastTxt = s.last ? `Último: ${fmtKm(s.last.km)} km · ${fmtDate(s.last.date)}` : 'Sin registrar todavía';
+    const lastTxt = s.last ? `Último: ${fmtKm(s.last.km)} ${U.short} · ${fmtDate(s.last.date)}` : 'Sin registrar todavía';
     return `
       <button class="task ${s.level}" data-guide="${t.id}">
         <span class="task-bar"></span>
@@ -298,7 +359,7 @@
       $('#historyList').innerHTML = `
         <div class="empty"><div class="empty-icon">🛠️</div>
           <p>Aún no hay mantenimientos registrados.</p>
-          <p class="muted">Registra lo que hayas hecho indicando los kilómetros y te diré qué es lo siguiente.</p>
+          <p class="muted">Registra lo que hayas hecho indicando ${bike.unit === 'h' ? 'las horas de motor' : 'los kilómetros'} y te diré qué es lo siguiente.</p>
           <button class="btn btn-primary" data-action="new-entry">+ Registrar el primero</button>
         </div>`;
       return;
@@ -310,7 +371,7 @@
         <article class="entry">
           <div class="entry-head">
             <div>
-              <div class="entry-km">${fmtKm(e.km)} <small>km</small></div>
+              <div class="entry-km">${fmtKm(e.km)} <small>${U.short}</small></div>
               <div class="entry-date">${fmtDate(e.date)}${e.cost ? ` · <span class="entry-cost">${Number(e.cost).toFixed(2).replace('.', ',')} €</span>` : ''}</div>
             </div>
             <div class="entry-actions">
@@ -319,7 +380,7 @@
             </div>
           </div>
           <div class="entry-tasks">
-            ${e.tasks.filter((id) => TASK_MAP[id]).map((id) => `<span class="entry-task" data-guide="${id}"><span class="cat-dot" style="background:${catColor(TASK_MAP[id])}"></span>${esc(TASK_MAP[id].name)}</span>`).join('')}
+            ${e.tasks.filter((id) => bike.taskMap[id]).map((id) => `<span class="entry-task" data-guide="${id}"><span class="cat-dot" style="background:${catColor(bike.taskMap[id])}"></span>${esc(bike.taskMap[id].name)}</span>`).join('')}
           </div>
           ${e.notes ? `<div class="entry-notes">${esc(e.notes)}</div>` : ''}
         </article>`).join('');
@@ -327,21 +388,27 @@
 
   // ---------- Render: Plan ----------
   function renderPlan() {
-    const filters = [['all', 'Todas', null], ...Object.entries(CATEGORIES).map(([k, c]) => [k, c.label, c.color])];
+    const cats = usedCategories();
+    if (planFilter !== 'all' && !cats.some(([k]) => k === planFilter)) planFilter = 'all';
+    const filters = [['all', 'Todas', null], ...cats.map(([k, c]) => [k, c.label, c.color])];
     $('#planFilters').innerHTML = filters.map(([k, label, color]) =>
       `<button class="chip ${planFilter === k ? 'active' : ''}" data-filter="${k}">${color ? `<span class="cat-dot" style="background:${color}"></span>` : ''}${label}</button>`).join('');
-    const list = TASKS.filter((t) => planFilter === 'all' || t.category === planFilter).map((t) => statusOf(t));
+    const list = bike.tasks.filter((t) => planFilter === 'all' || t.category === planFilter).map((t) => statusOf(t));
     $('#planList').innerHTML = list.map(taskRow).join('');
   }
 
+  const usedCategories = () => Object.entries(CATEGORIES).filter(([k]) => bike.tasks.some((t) => t.category === k));
+
   // ---------- Render: Ficha ----------
   function renderSpecs() {
-    $('#specsList').innerHTML = BIKE.specs.map((s) => `<div><dt>${esc(s.label)}</dt><dd>${esc(s.value)}</dd></div>`).join('');
+    $('#specsTitle').textContent = `Ficha técnica · ${bike.name}`;
+    $('#disclaimer').textContent = `Datos orientativos basados en ${bike.source}. Comprueba siempre los valores críticos (pares, holguras, medidas de llaves) en el manual de taller de tu unidad. Si no te ves seguro con un trabajo, acude a un taller.`;
+    $('#specsList').innerHTML = bike.specs.map((s) => `<div><dt>${esc(s.label)}</dt><dd>${esc(s.value)}</dd></div>`).join('');
     renderTorques('');
   }
   function renderTorques(q) {
     const seen = new Map();
-    for (const t of TASKS) for (const tq of t.torques) {
+    for (const t of bike.tasks) for (const tq of t.torques) {
       const key = tq.part.toLowerCase();
       if (!seen.has(key)) seen.set(key, { ...tq, task: t });
     }
@@ -355,7 +422,7 @@
   }
 
   function renderAll() {
-    $('#odoValue').textContent = fmtKm(currentKm());
+    renderHeader();
     renderHome();
     renderHistory();
     renderPlan();
@@ -378,22 +445,22 @@
 
   // Guía de una tarea
   function openGuide(id) {
-    const t = TASK_MAP[id];
+    const t = bike.taskMap[id];
     if (!t) return;
     const s = statusOf(t);
     const dots = Array.from({ length: 5 }, (_, i) => `<i class="${i < t.difficulty ? 'on' : ''}"></i>`).join('');
-    const lastTxt = s.last ? `${fmtKm(s.last.km)} km` : '—';
+    const lastTxt = s.last ? `${fmtKm(s.last.km)} ${U.short}` : '—';
     const lastSub = s.last ? fmtDate(s.last.date) : 'sin registro';
     let nextTxt = '—', nextSub = '';
-    if (s.nextKm !== null) { nextTxt = `${fmtKm(s.nextKm)} km`; nextSub = dueText(s); }
+    if (s.nextKm !== null) { nextTxt = `${fmtKm(s.nextKm)} ${U.short}`; nextSub = dueText(s); }
     else if (s.nextDate) { nextTxt = fmtDate(isoOf(s.nextDate)); nextSub = dueText(s); }
     else if (t.months) { nextSub = 'Registra la última vez que lo hiciste'; }
 
     openModal(`
-      <div class="hero-kicker" style="color:${catColor(t)}">${CATEGORIES[t.category].label}</div>
+      <div class="hero-kicker" style="color:${catColor(t)}">${esc(bike.short)} · ${CATEGORIES[t.category].label}</div>
       <h2>${esc(t.name)}</h2>
       <div class="guide-badges">
-        <span class="badge">🔁 ${intervalText(t)}${t.first ? ` (1ª a los ${fmtKm(t.first)} km)` : ''}</span>
+        <span class="badge">🔁 ${intervalText(t)}${t.first ? ` (1ª a ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(t.first)} ${U.short})` : ''}</span>
         <span class="badge">⏱ ${esc(t.duration)}</span>
         <span class="badge difficulty">Dificultad ${dots}</span>
       </div>
@@ -401,7 +468,7 @@
         <div><span>Última vez</span><b>${lastTxt}</b><div class="hint">${lastSub}</div></div>
         <div><span>Próxima</span><b>${nextTxt}</b><div class="hint">${esc(nextSub)}${!s.known && s.nextKm !== null ? ' (estimado)' : ''}</div></div>
       </div>
-      ${s.estDate && s.remainingKm > 0 ? `<p class="hint est-line">📈 A tu ritmo (~${fmtKm(ridingRate() * 30.4)} km/mes) llegarás a los ${fmtKm(s.nextKm)} km hacia el <b>${fmtDate(isoOf(s.estDate))}</b>.</p>` : ''}
+      ${s.estDate && s.remainingKm > 0 ? `<p class="hint est-line">📈 A tu ritmo (~${fmtKm(ridingRate() * 30.4)} ${U.perMonth}) llegarás a ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(s.nextKm)} ${U.short} hacia el <b>${fmtDate(isoOf(s.estDate))}</b>.</p>` : ''}
 
       ${t.torques.length ? `
       <div class="guide-section">
@@ -442,9 +509,9 @@
   function openEntryForm(entry, preset = []) {
     const editing = !!entry;
     const e = entry || { date: todayISO(), km: currentKm() || '', tasks: preset, notes: '', cost: '' };
-    const statuses = Object.fromEntries(TASKS.map((t) => [t.id, statusOf(t)]));
-    const groups = Object.entries(CATEGORIES).map(([key, c]) => {
-      const tasks = TASKS.filter((t) => t.category === key);
+    const statuses = Object.fromEntries(bike.tasks.map((t) => [t.id, statusOf(t)]));
+    const groups = usedCategories().map(([key, c]) => {
+      const tasks = bike.tasks.filter((t) => t.category === key);
       return `
         <div class="picker-group">
           <h4><span class="cat-dot" style="background:${c.color}"></span>${c.label}</h4>
@@ -459,10 +526,10 @@
 
     openModal(`
       <h2>${editing ? 'Editar registro' : 'Registrar mantenimiento'}</h2>
-      <p class="muted">Indica los kilómetros a los que lo hiciste y marca todo lo realizado. Las tareas con borde naranja son las que tocan ahora.</p>
+      <p class="muted"><b>${esc(bike.name)}</b>. Indica ${bike.unit === 'h' ? 'las horas de motor a las' : 'los kilómetros a los'} que lo hiciste y marca todo lo realizado. Las tareas con borde naranja son las que tocan ahora.</p>
       <form class="form" id="entryForm" novalidate>
         <div class="two">
-          <div class="field"><label for="fKm">Kilómetros</label><input id="fKm" type="number" inputmode="numeric" min="0" step="1" value="${esc(e.km)}" required placeholder="ej. 24500" /></div>
+          <div class="field"><label for="fKm">${cap(U.long)}</label><input id="fKm" type="text" inputmode="${U.decimals ? 'decimal' : 'numeric'}" value="${e.km === '' ? '' : esc(fmtInput(e.km))}" required placeholder="${U.placeholder}" /></div>
           <div class="field"><label for="fDate">Fecha</label><input id="fDate" type="date" value="${esc(e.date)}" max="${todayISO()}" required /></div>
         </div>
         <div class="field">
@@ -481,11 +548,11 @@
 
     $('#entryForm').addEventListener('submit', (ev) => {
       ev.preventDefault();
-      const km = parseInt($('#fKm').value, 10);
+      const km = parseCounter($('#fKm').value);
       const date = $('#fDate').value;
       const tasks = $$('input[name="tasks"]:checked').map((i) => i.value);
       const err = $('#formError');
-      if (!Number.isFinite(km) || km < 0) return (err.textContent = 'Introduce los kilómetros del mantenimiento.');
+      if (!Number.isFinite(km) || km < 0) return (err.textContent = `Introduce ${bike.unit === 'h' ? 'las horas' : 'los kilómetros'} del mantenimiento.`);
       if (!date) return (err.textContent = 'Introduce la fecha.');
       if (!tasks.length) return (err.textContent = 'Marca al menos un trabajo realizado.');
 
@@ -499,7 +566,7 @@
 
       const next = allStatuses()[0];
       const nextMsg = next.remainingKm !== null && next.remainingKm >= 0
-        ? `Próximo: ${next.task.name} en ${fmtKm(next.remainingKm)} km`
+        ? `Próximo: ${next.task.name} en ${fmtKm(next.remainingKm)} ${U.short}`
         : `Próximo: ${next.task.name}`;
       toast(`✓ Guardado. ${nextMsg}`);
     });
@@ -508,11 +575,11 @@
   function openOdometer() {
     const maxEntry = state.entries.reduce((m, e) => Math.max(m, Number(e.km) || 0), 0);
     openModal(`
-      <h2>Kilómetros actuales</h2>
-      <p class="muted">Actualiza el cuentakilómetros cada vez que cojas la moto para que los avisos sean precisos.</p>
+      <h2>${cap(U.long)} actuales</h2>
+      <p class="muted"><b>${esc(bike.name)}</b>. Actualiza ${bike.unit === 'h' ? 'las horas de motor (modo H del cuadro)' : 'el cuentakilómetros'} cada vez que cojas la moto para que los avisos sean precisos.</p>
       <form class="form" id="odoForm" novalidate>
-        <div class="field"><label for="fOdo">Cuentakilómetros</label>
-          <input id="fOdo" type="number" inputmode="numeric" min="0" step="1" value="${currentKm() || ''}" placeholder="ej. 32150" style="font-size:1.6rem;font-family:var(--display);font-weight:700" autofocus />
+        <div class="field"><label for="fOdo">${U.meter}</label>
+          <input id="fOdo" type="text" inputmode="${U.decimals ? 'decimal' : 'numeric'}" value="${currentKm() ? esc(fmtInput(currentKm())) : ''}" placeholder="${U.placeholder}" style="font-size:1.6rem;font-family:var(--display);font-weight:700" autofocus />
         </div>
         <div class="error" id="odoError"></div>
         <button class="btn btn-primary btn-block" type="submit">Guardar</button>
@@ -521,54 +588,56 @@
     setTimeout(() => input.select(), 50);
     $('#odoForm').addEventListener('submit', (ev) => {
       ev.preventDefault();
-      const v = parseInt(input.value, 10);
+      const v = parseCounter(input.value);
       if (!Number.isFinite(v) || v < 0) return ($('#odoError').textContent = 'Introduce un número válido.');
-      if (v < maxEntry) return ($('#odoError').textContent = `Tienes un mantenimiento registrado a ${fmtKm(maxEntry)} km; el cuentakilómetros no puede ser menor.`);
+      if (v < maxEntry) return ($('#odoError').textContent = `Tienes un mantenimiento registrado a ${fmtKm(maxEntry)} ${U.short}; el contador no puede ser menor.`);
       state.odometer = v;
       const today = todayISO();
       state.readings = [...state.readings.filter((r) => r.date !== today), { date: today, km: v }].slice(-300);
       save();
       closeModal();
       renderAll();
-      toast('Kilómetros actualizados');
+      toast(`${cap(U.long)} actualizad${bike.unit === 'h' ? 'as' : 'os'}`);
     });
   }
 
   // ---------- Recordatorios ----------
-  // Calcula cuándo avisar de cada tarea: X días antes de la fecha límite o X km antes
-  // (convertidos en fecha según tu ritmo de uso). Lo lee también el service worker.
-  function buildSchedule() {
-    const R = state.reminders;
+  // Calcula cuándo avisar de cada tarea: X días antes de la fecha límite o X km/horas antes
+  // (convertidos en fecha según tu ritmo de uso). Incluye todas las motos con datos.
+  // Lo lee también el service worker.
+  function bikeSchedule() {
+    const R = store.reminders;
     const now = Date.now();
     const items = [];
     for (const s of allStatuses()) {
       const ats = [];
       if (s.nextDate) ats.push(addDays(s.nextDate, -R.daysBefore).setHours(10));
       if (s.nextKm !== null) {
-        if (s.remainingKm <= R.kmBefore) ats.push(now);
+        if (s.remainingKm <= state.before) ats.push(now);
         else {
-          const d = estimateDate(s.nextKm - R.kmBefore);
+          const d = estimateDate(s.nextKm - state.before);
           if (d) ats.push(d.setHours(10));
         }
       }
       if (!ats.length) continue;
-      const when = [s.nextKm !== null ? `a los ${fmtKm(s.nextKm)} km` : '', s.nextDate ? `antes del ${fmtDate(isoOf(s.nextDate))}` : ''].filter(Boolean).join(' o ');
+      const when = [s.nextKm !== null ? `a ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(s.nextKm)} ${U.short}` : '', s.nextDate ? `antes del ${fmtDate(isoOf(s.nextDate))}` : ''].filter(Boolean).join(' o ');
       items.push({
-        key: `task:${s.task.id}:${s.nextKm ?? ''}:${s.nextDate ? isoOf(s.nextDate) : ''}`,
-        kind: 'task', at: Math.min(...ats), title: s.task.name, body: `Toca ${when}.`,
+        key: `task:${bike.id}:${s.task.id}:${s.nextKm ?? ''}:${s.nextDate ? isoOf(s.nextDate) : ''}`,
+        kind: 'task', at: Math.min(...ats), title: `${bike.short} · ${s.task.name}`, body: `Toca ${when}.`,
       });
     }
     const last = lastPoint();
     if (R.odoDays > 0 && last) {
       items.push({
-        key: `odo:${last.date}:${last.km}`, kind: 'odo', at: addDays(parseDate(last.date), R.odoDays).setHours(10),
-        title: '🏍️ ¿Cuántos km llevas?', body: 'Actualiza el cuentakilómetros para que los avisos de mantenimiento sean precisos.',
+        key: `odo:${bike.id}:${last.date}:${last.km}`, kind: 'odo', at: addDays(parseDate(last.date), R.odoDays).setHours(10),
+        title: `🏍️ ${U.howMany} la ${bike.short}?`, body: `Actualiza ${bike.unit === 'h' ? 'las horas de motor' : 'el cuentakilómetros'} para que los avisos de mantenimiento sean precisos.`,
       });
     }
     return items;
   }
+  const buildSchedule = () => BIKES.filter((b) => hasData(store.bikes[b.id])).flatMap((b) => withBike(b.id, bikeSchedule));
 
-  const canNotify = () => state.reminders.enabled && 'Notification' in window && Notification.permission === 'granted';
+  const canNotify = () => store.reminders.enabled && 'Notification' in window && Notification.permission === 'granted';
 
   async function showNotification(m) {
     const opts = { ...NOTIFICATION_DEFAULTS, body: m.body, tag: m.tag };
@@ -578,18 +647,25 @@
   }
 
   // Guarda el calendario de avisos y muestra los que ya tocan.
-  // Con la app abierta no se avisa de los km: ya se ve el aviso en pantalla.
-  let syncing = Promise.resolve();
-  function syncReminders() {
-    syncing = syncing.then(async () => {
+  // Con la app abierta no se avisa de actualizar el contador: ya se ve el aviso en pantalla.
+  // Si se guarda varias veces seguidas sólo se escribe el último calendario pendiente.
+  let pendingSchedule = null;
+  let syncing = false;
+  async function syncReminders() {
+    pendingSchedule = store.reminders.enabled ? buildSchedule() : [];
+    if (syncing) return;
+    syncing = true;
+    while (pendingSchedule) {
+      const schedule = pendingSchedule;
+      pendingSchedule = null;
       try {
-        await kv.set('schedule', state.reminders.enabled ? buildSchedule() : []);
-        if (!canNotify()) return;
+        await kv.set('schedule', schedule);
+        if (!canNotify()) continue;
         const due = await takeDueReminders();
         for (const m of reminderMessages(due.filter((r) => r.kind === 'task'))) await showNotification(m);
       } catch (e) { /* IndexedDB o notificaciones no disponibles */ }
-    });
-    return syncing;
+    }
+    syncing = false;
   }
 
   // Comprobación en segundo plano: sólo Chrome/Edge con la app instalada
@@ -605,7 +681,7 @@
     } catch (e) { return false; }
   }
 
-  // Tareas con fecha (límite o estimada por km) para el calendario
+  // Tareas con fecha (límite o estimada por uso) para el calendario, de la moto seleccionada
   function calendarEvents(onlyId) {
     const today = startOfToday();
     const limit = addMonths(isoOf(today), 12);
@@ -615,13 +691,14 @@
         const dates = [s.nextDate, s.estDate].filter(Boolean);
         if (!dates.length) return null;
         const due = new Date(Math.max(today, Math.min(...dates)));
-        return due <= limit ? { s, due } : null;
+        return due <= limit ? { bikeId: bike.id, s, due } : null;
       })
       .filter(Boolean);
   }
+  const allCalendarEvents = () => BIKES.filter((b) => hasData(store.bikes[b.id])).flatMap((b) => withBike(b.id, () => calendarEvents()));
 
   function downloadICS(events, filename) {
-    const R = state.reminders;
+    const R = store.reminders;
     const d8 = (d) => isoOf(d).replace(/-/g, '');
     const txt = (s) => s.replace(/[\\;,]/g, (c) => '\\' + c).replace(/\n/g, '\\n');
     // Las líneas de un .ics no deben superar 75 caracteres
@@ -639,27 +716,30 @@
       const lead = Math.min(R.daysBefore, daysBetween(today, due) - 1);
       return lead > 0 ? `-P${lead - 1}DT15H` : 'PT9H';
     };
-    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//GSX-R Garage//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
-    for (const { s, due } of events) {
-      const t = s.task;
-      const desc = [
-        intervalText(t) + '.',
-        s.nextKm !== null ? `Toca a los ${fmtKm(s.nextKm)} km${s.nextDate ? '' : ' (fecha estimada según tu ritmo de uso)'}.` : '',
-        s.nextDate ? `Fecha límite: ${fmtDate(isoOf(s.nextDate))}.` : '',
-        'Guía, herramientas y pares de apriete en GSX-R Garage.',
-      ].filter(Boolean).join('\n');
-      lines.push(
-        'BEGIN:VEVENT',
-        `UID:gsxr-${t.id}@gsxr-garage`,
-        `DTSTAMP:${stamp}`,
-        `DTSTART;VALUE=DATE:${d8(due)}`,
-        `DTEND;VALUE=DATE:${d8(addDays(due, 1))}`,
-        `SUMMARY:${txt(`🏍️ ${t.name}`)}`,
-        `DESCRIPTION:${txt(desc)}`,
-        'TRANSP:TRANSPARENT',
-        'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${txt(t.name)}`, `TRIGGER:${trigger(due)}`, 'END:VALARM',
-        'END:VEVENT',
-      );
+    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Garage//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
+    for (const { bikeId, s, due } of events) {
+      withBike(bikeId, () => {
+        const t = s.task;
+        const desc = [
+          `${bike.name}. ${intervalText(t)}.`,
+          s.nextKm !== null ? `Toca a ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(s.nextKm)} ${U.short}${s.nextDate ? '' : ' (fecha estimada según tu ritmo de uso)'}.` : '',
+          s.nextDate ? `Fecha límite: ${fmtDate(isoOf(s.nextDate))}.` : '',
+          'Guía, herramientas y pares de apriete en la app Garage.',
+        ].filter(Boolean).join('\n');
+        lines.push(
+          'BEGIN:VEVENT',
+          // El UID de la GSX-R se mantiene como antes para que se actualicen los eventos ya añadidos
+          `UID:${bike.id === 'gsxr600k6' ? 'gsxr' : bike.id}-${t.id}@gsxr-garage`,
+          `DTSTAMP:${stamp}`,
+          `DTSTART;VALUE=DATE:${d8(due)}`,
+          `DTEND;VALUE=DATE:${d8(addDays(due, 1))}`,
+          `SUMMARY:${txt(`🏍️ ${bike.short} · ${t.name}`)}`,
+          `DESCRIPTION:${txt(desc)}`,
+          'TRANSP:TRANSPARENT',
+          'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${txt(`${bike.short} · ${t.name}`)}`, `TRIGGER:${trigger(due)}`, 'END:VALARM',
+          'END:VEVENT',
+        );
+      });
     }
     lines.push('END:VCALENDAR');
     const blob = new Blob([lines.map(fold).join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' });
@@ -671,7 +751,7 @@
   }
 
   function openReminders() {
-    const R = state.reminders;
+    const R = store.reminders;
     const rate = ridingRate();
     const supported = 'Notification' in window;
     const perm = supported ? Notification.permission : 'unsupported';
@@ -679,12 +759,13 @@
       ? 'Este navegador no admite notificaciones. En iPhone instala la app en la pantalla de inicio (iOS 16.4 o superior) o usa el calendario.'
       : perm === 'denied'
         ? 'Las notificaciones están bloqueadas: actívalas en los ajustes del navegador para este sitio.'
-        : 'Te aviso al abrir la app y, con la app instalada en Android, también en segundo plano.';
-    const events = calendarEvents();
+        : 'Te aviso al abrir la app y, con la app instalada en Android, también en segundo plano. Sirve para todas tus motos.';
+    const events = allCalendarEvents();
+    const usedBikes = BIKES.filter((b) => hasData(store.bikes[b.id])).length;
 
     openModal(`
       <h2>Recordatorios</h2>
-      <p class="muted">Te aviso cuando se acerque un mantenimiento, por kilómetros o por tiempo, y te recuerdo apuntar los km.</p>
+      <p class="muted">Te aviso cuando se acerque un mantenimiento, por uso o por tiempo, y te recuerdo apuntar ${bike.unit === 'h' ? 'las horas' : 'los km'}.</p>
       <form class="form" id="remForm" novalidate>
         <label class="switch-row">
           <input type="checkbox" id="rEnabled" ${R.enabled && perm === 'granted' ? 'checked' : ''} ${supported ? '' : 'disabled'} />
@@ -692,18 +773,19 @@
           <span><b>Notificaciones en este dispositivo</b><span class="hint">${permHint}</span></span>
         </label>
         <div class="two">
-          <div class="field"><label for="rKm">Avisar con (km)</label><input id="rKm" type="number" inputmode="numeric" min="0" step="100" value="${R.kmBefore}" /></div>
+          <div class="field"><label for="rKm">Avisar con (${U.short})</label><input id="rKm" type="text" inputmode="${U.decimals ? 'decimal' : 'numeric'}" value="${esc(fmtInput(state.before))}" /></div>
           <div class="field"><label for="rDays">Avisar con (días)</label><input id="rDays" type="number" inputmode="numeric" min="0" max="365" step="1" value="${R.daysBefore}" /></div>
         </div>
+        <div class="hint" style="margin-top:-6px">Los ${U.short} de antelación son de la ${esc(bike.short)}; cada moto tiene los suyos. Los días valen para todas.</div>
         <div class="field">
-          <label for="rOdo">Recordar actualizar los km cada (días)</label>
+          <label for="rOdo">Recordar actualizar el contador cada (días)</label>
           <input id="rOdo" type="number" inputmode="numeric" min="0" max="365" step="1" value="${R.odoDays}" />
           <div class="hint" style="margin-top:6px">0 = no recordar.</div>
         </div>
         <div class="rate-box">
           ${rate
-            ? `📈 Tu ritmo: <b>~${fmtKm(rate * 30.4)} km/mes</b>. Lo uso para calcular la fecha aproximada de los mantenimientos por km.`
-            : '📈 Actualiza los km de vez en cuando (al menos con dos semanas de diferencia) y calcularé tu ritmo para estimar las fechas de los mantenimientos por km.'}
+            ? `📈 Ritmo de la ${esc(bike.short)}: <b>~${fmtKm(rate * 30.4)} ${U.perMonth}</b>. Lo uso para calcular la fecha aproximada de los mantenimientos por ${U.long}.`
+            : `📈 Actualiza ${bike.unit === 'h' ? 'las horas' : 'los km'} de vez en cuando (al menos con dos semanas de diferencia) y calcularé tu ritmo para estimar las fechas de los mantenimientos.`}
         </div>
         <div class="error" id="remError"></div>
         <button type="submit" class="btn btn-primary btn-block">Guardar</button>
@@ -711,10 +793,10 @@
 
       <div class="guide-section">
         <h3>📅 Calendario</h3>
-        <p class="muted">La opción más fiable en cualquier móvil (también iPhone): añade los próximos mantenimientos a tu calendario, con alarma los días de antelación que hayas elegido. Si cambian las fechas, vuelve a añadirlos y se actualizarán.</p>
+        <p class="muted">La opción más fiable en cualquier móvil (también iPhone): añade los próximos mantenimientos${usedBikes > 1 ? ' de todas tus motos' : ''} a tu calendario, con alarma los días de antelación que hayas elegido. Si cambian las fechas, vuelve a añadirlos y se actualizarán.</p>
         ${events.length
           ? `<button class="btn btn-block" data-action="ics-all">📅 Añadir al calendario (${events.length})</button>`
-          : '<p class="hint">Aún no hay fechas que añadir: registra mantenimientos o actualiza los km un par de veces.</p>'}
+          : '<p class="hint">Aún no hay fechas que añadir: registra mantenimientos o actualiza el contador un par de veces.</p>'}
       </div>
       ${canNotify() ? '<div class="guide-section"><button class="btn btn-ghost btn-block" data-action="test-notif">Probar notificación</button></div>' : ''}
     `);
@@ -723,12 +805,12 @@
       ev.preventDefault();
       const err = $('#remError');
       const num = (id, max) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) && v >= 0 && v <= max ? v : null; };
-      const kmBefore = num('#rKm', 20000);
+      const before = parseCounter($('#rKm').value);
       const daysBefore = num('#rDays', 365);
       const odoDays = num('#rOdo', 365);
-      if (kmBefore === null || daysBefore === null || odoDays === null) return (err.textContent = 'Revisa los valores: deben ser números positivos.');
+      if (!Number.isFinite(before) || daysBefore === null || odoDays === null) return (err.textContent = 'Revisa los valores: deben ser números positivos.');
 
-      let enabled = $('#rEnabled').checked;
+      const enabled = $('#rEnabled').checked;
       if (enabled && Notification.permission !== 'granted') {
         const result = await Notification.requestPermission();
         if (result !== 'granted') {
@@ -736,7 +818,8 @@
           return (err.textContent = 'No has dado permiso para las notificaciones. Puedes usar el calendario.');
         }
       }
-      state.reminders = { enabled, kmBefore, daysBefore, odoDays };
+      store.reminders = { enabled, daysBefore, odoDays };
+      state.before = before;
       save();
       closeModal();
       renderAll();
@@ -761,12 +844,70 @@
     try { sessionStorage.setItem('gsxr-view', name); } catch (e) { /* ignorar */ }
   }
 
+  // ---------- Selector de moto ----------
+  function renderHeader() {
+    document.documentElement.dataset.brand = bike.brand;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = bike.brand === 'ktm' ? '#111111' : '#0a0e16';
+    $('#bikeName').textContent = bike.short;
+    $('#bikeModel').textContent = `${bike.name} · ${bike.years}`;
+    $('#odoLabel').textContent = U.meter;
+    $('#odoValue').textContent = fmtKm(currentKm());
+    $('#odoUnit').textContent = U.short;
+    $('#planIntro').textContent = `Intervalos del fabricante para la ${bike.name} (${bike.years})${bike.unit === 'h' ? ', en horas de motor' : ''}. Toca cualquier tarea para ver cómo hacerla, herramientas y pares de apriete.`;
+  }
+
+  function renderBikeMenu() {
+    $('#bikeMenu').innerHTML = BIKES.map((b) => {
+      const data = store.bikes[b.id];
+      const info = withBike(b.id, () => {
+        if (!hasData(data)) return { counter: 'Sin datos todavía', overdue: 0 };
+        return {
+          counter: `${fmtKm(currentKm())} ${U.short}`,
+          overdue: allStatuses().filter((s) => s.level === 'overdue').length,
+        };
+      });
+      return `
+        <button class="bike-option ${b.id === bike.id ? 'active' : ''}" role="option" aria-selected="${b.id === bike.id}" data-bike="${b.id}">
+          <span class="bike-dot ${b.brand}"></span>
+          <span class="bike-option-main">
+            <b>${esc(b.name)}</b>
+            <span class="hint">${esc(b.years)} · ${info.counter}</span>
+            ${info.overdue ? `<span class="tag overdue">${info.overdue} vencido${info.overdue === 1 ? '' : 's'}</span>` : ''}
+          </span>
+          ${b.id === bike.id ? '<span class="bike-check" aria-hidden="true">✓</span>' : ''}
+        </button>`;
+    }).join('');
+  }
+
+  function toggleBikeMenu(open = $('#bikeMenu').hidden) {
+    if (open) renderBikeMenu();
+    $('#bikeMenu').hidden = !open;
+    $('#bikeBtn').setAttribute('aria-expanded', String(open));
+  }
+
+  function selectBike(id) {
+    toggleBikeMenu(false);
+    if (id === bike.id) return;
+    setBike(id);
+    planFilter = 'all';
+    $('#torqueSearch').value = '';
+    save();
+    renderSpecs();
+    renderAll();
+    window.scrollTo({ top: 0 });
+  }
+
   // ---------- Eventos ----------
   document.addEventListener('click', (ev) => {
-    const el = ev.target.closest('[data-guide],[data-action],[data-edit],[data-delete],[data-filter],[data-view],[data-close],.steps li');
+    // Cerrar el selector de moto al tocar fuera
+    if (!ev.target.closest('#bikeMenu, #bikeBtn') && !$('#bikeMenu').hidden) toggleBikeMenu(false);
+
+    const el = ev.target.closest('[data-guide],[data-action],[data-edit],[data-delete],[data-filter],[data-view],[data-close],[data-bike],.steps li');
     if (!el) return;
 
     if (el.matches('.steps li')) return el.classList.toggle('done');
+    if (el.dataset.bike) return selectBike(el.dataset.bike);
     if (el.hasAttribute('data-close')) return closeModal();
     if (el.dataset.view) return showView(el.dataset.view);
     if (el.dataset.filter) { planFilter = el.dataset.filter; return renderPlan(); }
@@ -774,7 +915,7 @@
     if (el.dataset.edit) return openEntryForm(state.entries.find((e) => e.id === el.dataset.edit));
     if (el.dataset.delete) {
       const e = state.entries.find((x) => x.id === el.dataset.delete);
-      if (e && confirm(`¿Eliminar el registro de los ${fmtKm(e.km)} km?`)) {
+      if (e && confirm(`¿Eliminar el registro de ${bike.unit === 'h' ? 'las' : 'los'} ${fmtKm(e.km)} ${U.short}?`)) {
         state.entries = state.entries.filter((x) => x.id !== e.id);
         save(); renderAll(); toast('Registro eliminado');
       }
@@ -784,43 +925,70 @@
     if (el.dataset.action === 'odometer') return openOdometer();
     if (el.dataset.action === 'reminders') return openReminders();
     if (el.dataset.action === 'ics' || el.dataset.action === 'ics-all') {
-      const events = calendarEvents(el.dataset.task);
+      const events = el.dataset.task ? calendarEvents(el.dataset.task) : allCalendarEvents();
       if (!events.length) return toast('No hay fechas que añadir todavía');
-      downloadICS(events, el.dataset.task ? `gsxr-${el.dataset.task}.ics` : 'gsxr-mantenimientos.ics');
+      downloadICS(events, el.dataset.task ? `${bike.id}-${el.dataset.task}.ics` : 'motos-mantenimientos.ics');
       return toast('📅 Abre el archivo descargado para añadirlo a tu calendario');
     }
     if (el.dataset.action === 'test-notif') {
-      return showNotification({ tag: 'gsxr-test', title: '🏍️ GSX-R Garage', body: 'Así te llegarán los avisos de mantenimiento.' })
+      return showNotification({ tag: 'gsxr-test', title: '🏍️ Garage', body: 'Así te llegarán los avisos de mantenimiento.' })
         .catch(() => toast('No se pudo mostrar la notificación'));
     }
   });
 
+  $('#bikeBtn').addEventListener('click', () => toggleBikeMenu());
   $('#odoBtn').addEventListener('click', openOdometer);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('#bikeMenu').hidden) return toggleBikeMenu(false);
+    closeModal();
+  });
   $('#torqueSearch').addEventListener('input', (e) => renderTorques(e.target.value.trim()));
 
-  // Copia de seguridad
+  // Copia de seguridad (todas las motos)
   $('#exportBtn').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify({ app: 'gsxr600k6-garage', version: 1, exported: new Date().toISOString(), ...state }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ app: 'revimotos-garage', version: 2, exported: new Date().toISOString(), ...store }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `gsxr600k6-mantenimiento-${todayISO()}.json`;
+    a.download = `motos-mantenimiento-${todayISO()}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
+
+  const validEntries = (list, def) => (Array.isArray(list) ? list : [])
+    .filter((e) => e && Number.isFinite(Number(e.km)) && isISODate(e.date) && Array.isArray(e.tasks))
+    .map((e) => ({ id: e.id || uid(), km: Number(e.km), date: e.date, tasks: e.tasks.filter((id) => BIKE_MAP[def.id].taskMap[id]), cost: e.cost ?? '', notes: String(e.notes || '') }));
+
   $('#importInput').addEventListener('change', async (ev) => {
     const file = ev.target.files[0];
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!Array.isArray(data.entries)) throw new Error('formato');
-      const entries = data.entries
-        .filter((e) => e && Number.isFinite(Number(e.km)) && /^\d{4}-\d{2}-\d{2}$/.test(e.date) && Array.isArray(e.tasks))
-        .map((e) => ({ id: e.id || uid(), km: Number(e.km), date: e.date, tasks: e.tasks.filter((id) => TASK_MAP[id]), cost: e.cost ?? '', notes: String(e.notes || '') }));
-      if (!confirm(`Se importarán ${entries.length} registros y se reemplazarán los datos actuales. ¿Continuar?`)) return;
       // Los permisos de notificación son de cada dispositivo: se mantiene el ajuste actual
-      state = normalize({ ...data, entries, reminders: { ...data.reminders, enabled: state.reminders.enabled } });
-      save(); renderAll(); toast('Datos importados');
+      const enabled = store.reminders.enabled;
+      let next;
+      if (data.bikes && typeof data.bikes === 'object') {
+        const bikes = {};
+        for (const b of BIKES) {
+          const src = data.bikes[b.id] || {};
+          bikes[b.id] = { ...src, entries: validEntries(src.entries, b) };
+        }
+        const total = BIKES.reduce((n, b) => n + bikes[b.id].entries.length, 0);
+        if (!confirm(`Se importarán ${total} registros de todas las motos y se reemplazarán los datos actuales. ¿Continuar?`)) return;
+        next = normalizeStore({ ...data, bikes });
+      } else if (Array.isArray(data.entries)) {
+        // Copia de la versión anterior de la app: sólo tenía la GSX-R
+        const gsxr = BIKE_MAP.gsxr600k6;
+        const entries = validEntries(data.entries, gsxr);
+        if (!confirm(`Copia de la versión anterior: se importarán ${entries.length} registros en la ${gsxr.name} y se reemplazarán sus datos. ¿Continuar?`)) return;
+        next = { ...store, bikes: { ...store.bikes, gsxr600k6: normalizeBike({ ...data, entries, before: data.reminders && data.reminders.kmBefore }, gsxr) } };
+      } else {
+        throw new Error('formato');
+      }
+      store = next;
+      store.reminders.enabled = enabled;
+      setBike(store.current);
+      save(); renderSpecs(); renderAll(); toast('Datos importados');
     } catch (e) {
       toast('El archivo no es una copia válida');
     } finally {
@@ -828,8 +996,9 @@
     }
   });
   $('#resetBtn').addEventListener('click', () => {
-    if (confirm('¿Borrar TODO el historial y los kilómetros? Esta acción no se puede deshacer.')) {
-      state = normalize({ reminders: state.reminders });
+    if (confirm(`¿Borrar TODO el historial y ${bike.unit === 'h' ? 'las horas' : 'los kilómetros'} de la ${bike.name}? Las otras motos no se tocan. Esta acción no se puede deshacer.`)) {
+      store.bikes[bike.id] = normalizeBike({ before: state.before }, bike);
+      setBike(bike.id);
       save(); renderAll(); toast('Datos borrados');
     }
   });

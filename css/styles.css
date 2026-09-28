@@ -45,10 +45,10 @@ h3 { margin: 0; font-size: 1.05rem; }
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; background: none; border: 0; padding: 4px 6px 4px 0; margin: 0; color: inherit; text-align: left; cursor: pointer; border-radius: 12px; }
 .brand-mark { width: 38px; height: 38px; color: var(--text); flex: none; }
 .brand-title { font-family: var(--display); font-style: italic; font-weight: 700; font-size: 1.5rem; line-height: 1; letter-spacing: .02em; }
-.brand-title span { color: var(--blue-2); }
+.brand-title .caret { color: var(--blue-2); font-style: normal; font-size: .9rem; margin-left: 6px; display: inline-block; transition: transform .2s; }
 .brand-sub { font-size: .75rem; color: var(--muted); margin-top: 2px; white-space: nowrap; }
 .odo {
   display: grid; justify-items: end; gap: 0;
@@ -57,7 +57,7 @@ h3 { margin: 0; font-size: 1.05rem; }
   padding: 6px 12px; cursor: pointer; transition: border-color .2s;
 }
 .odo:hover { border-color: var(--blue); }
-.odo-label { font-size: .62rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.odo-label { font-size: .62rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); white-space: nowrap; }
 .odo-value { font-family: var(--display); font-weight: 700; font-size: 1.6rem; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .odo-value small { font-size: .9rem; color: var(--muted); }
 .odo-edit { font-size: .65rem; color: var(--blue-2); }
@@ -337,4 +337,51 @@ main { max-width: 900px; margin: 0 auto; padding: 16px; }
 .btn-block { white-space: normal; }
 @media (max-width: 360px) {
   .stat span { font-size: .68rem; letter-spacing: .02em; }
+}
+
+/* ---------- Selector de moto ---------- */
+.bike-picker { position: relative; min-width: 0; }
+.brand-text { display: grid; min-width: 0; }
+.brand-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand:focus-visible { outline: 2px solid var(--blue-2); outline-offset: 2px; }
+.brand[aria-expanded="true"] .caret { transform: rotate(180deg); }
+.bike-menu {
+  position: absolute; top: calc(100% + 10px); left: 0; z-index: 30;
+  width: min(360px, calc(100vw - 32px)); padding: 6px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);
+  display: grid; gap: 4px; animation: fade .15s ease;
+}
+.bike-menu[hidden] { display: none; }
+.bike-option {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 60px; text-align: left;
+  background: none; border: 1px solid transparent; border-radius: 12px; padding: 10px 12px; cursor: pointer;
+}
+.bike-option:hover { background: var(--card); }
+.bike-option.active { background: var(--card); border-color: var(--line); }
+.bike-option-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.bike-option-main b { font-size: .95rem; }
+.bike-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: #1f6bff; box-shadow: 0 0 0 3px rgba(31, 107, 255, .2); }
+.bike-dot.ktm { background: #ff6a00; box-shadow: 0 0 0 3px rgba(255, 106, 0, .2); }
+.bike-check { color: var(--blue-2); font-weight: 700; }
+
+/* ---------- Tema KTM (naranja) ---------- */
+:root[data-brand="ktm"] { --blue: #ff6a00; --blue-2: #ff8a33; --bg: #0c0c0d; --bg-2: #141415; --card: #1b1b1d; --card-2: #232326; --line: #333338; }
+:root[data-brand="ktm"] body { background: radial-gradient(1200px 500px at 80% -200px, rgba(255, 106, 0, .14), transparent 60%), var(--bg); }
+:root[data-brand="ktm"] .topbar { background: rgba(12, 12, 13, .85); }
+:root[data-brand="ktm"] .btn-primary,
+:root[data-brand="ktm"] .pick input:checked + span { color: #111; }
+:root[data-brand="ktm"] .steps li::before { color: #111; }
+:root[data-brand="ktm"] .hero:not(.overdue):not(.soon) { background: linear-gradient(135deg, #1d1d1f 0%, #2a2a2d 60%, #36363a 100%); border: 1px solid rgba(255, 106, 0, .55); }
+:root[data-brand="ktm"] .hero:not(.overdue):not(.soon) .hero-kicker { color: #ff8a33; opacity: 1; }
+:root[data-brand="ktm"] .torque-card { background: linear-gradient(135deg, rgba(255, 106, 0, .14), rgba(255, 106, 0, .04)); border-color: rgba(255, 138, 51, .35); }
+:root[data-brand="ktm"] .nudge { background: rgba(255, 106, 0, .1); border-color: rgba(255, 138, 51, .4); }
+.topbar .bike-picker { flex: 1 1 auto; }
+.bike-picker .brand { width: 100%; }
+.topbar .odo { flex: none; }
+.bike-option .tag { justify-self: start; margin-top: 2px; }
+@media (max-width: 420px) {
+  .brand-mark { width: 30px; height: 30px; }
+  .brand { gap: 8px; }
+  .odo { padding: 5px 10px; }
+  .odo-label { font-size: .56rem; }
 }

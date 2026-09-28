@@ -1,18 +1,26 @@
-# 🏍️ GSX-R Garage — Mantenimiento Suzuki GSX-R 600 K6
+# 🏍️ Garage — Mantenimiento de motos
 
-Aplicación web para llevar el mantenimiento de una **Suzuki GSX-R 600 K6 (2006-2007)**.
-Funciona en el navegador, se puede instalar en el móvil como app y no necesita conexión ni servidor: los datos se guardan en tu dispositivo.
+Aplicación web para llevar el mantenimiento de varias motos:
+
+| Moto | Años | Intervalos en |
+|---|---|---|
+| **Suzuki GSX-R 600 K6** | 2006 – 2007 | kilómetros |
+| **KTM 1290 Super Duke R** | 2017 | kilómetros |
+| **KTM 250 EXC 2T** | 2009 | horas de motor |
+
+Se cambia de moto con el desplegable de arriba a la izquierda. Funciona en el navegador, se puede instalar en el móvil como app y no necesita conexión ni servidor: los datos se guardan en tu dispositivo.
 
 **👉 Úsala aquí:** https://antoniogarfer12.github.io/gsxr600-k6-mantenimiento/
 
 ## Qué hace
 
-- **Historial de mantenimiento**: registra fecha, kilómetros, trabajos realizados, coste y notas.
-- **Qué toca y cuándo**: a partir de los kilómetros de cada mantenimiento calcula la próxima revisión de cada tarea y cuántos km (o meses) faltan, con avisos de *vencido* / *pronto*.
-- **Recordatorios**: notificaciones cuando se acerca un mantenimiento (X km o X días antes, configurable), aviso para actualizar los km y exportación de los próximos mantenimientos al calendario del móvil (.ics, funciona también en iPhone). A partir de tus lecturas de km calcula tu ritmo de uso y estima la fecha de los mantenimientos por kilómetros.
+- **Varias motos**: cada una con su historial, su contador (km u horas de motor) y su plan de mantenimiento. Las KTM usan el color naranja.
+- **Historial de mantenimiento**: registra fecha, km/horas, trabajos realizados, coste y notas.
+- **Qué toca y cuándo**: a partir de cada mantenimiento calcula la próxima revisión de cada tarea y cuánto falta (km, horas o meses), con avisos de *vencido* / *pronto*.
+- **Recordatorios**: notificaciones cuando se acerca un mantenimiento de cualquiera de tus motos (antelación configurable), aviso para actualizar el contador y exportación de los próximos mantenimientos al calendario del móvil (.ics, funciona también en iPhone). Con tus lecturas del contador calcula tu ritmo de uso y estima las fechas.
 - **Guía de cada tarea**: paso a paso, herramientas y llaves necesarias, recambios y **pares de apriete**.
-- **Ficha técnica** con especificaciones y buscador de pares de apriete.
-- **Copia de seguridad**: exporta/importa tus datos en JSON.
+- **Ficha técnica** de cada moto con especificaciones y buscador de pares de apriete.
+- **Copia de seguridad**: exporta/importa los datos de todas las motos en JSON (también importa copias de la versión anterior, que sólo tenía la GSX-R).
 
 ## Instalar en el móvil
 
@@ -25,16 +33,23 @@ Descarga el repositorio y abre `index.html` en el navegador. No requiere instala
 ## Estructura
 
 ```
-index.html           Interfaz
-css/styles.css       Estilos
-js/data.js           Plan de mantenimiento, guías, herramientas y pares de apriete
-js/app.js            Lógica (cálculo de próximos mantenimientos, historial, etc.)
-js/store.js          Calendario de avisos compartido con el service worker (IndexedDB)
-sw.js                Service worker (uso sin conexión y avisos en segundo plano)
+index.html                   Interfaz
+css/styles.css               Estilos
+js/bikes/common.js           Lista de motos y categorías (formato de los datos)
+js/bikes/gsxr600k6.js        Suzuki GSX-R 600 K6: plan, guías, herramientas y pares
+js/bikes/superduke1290r.js   KTM 1290 Super Duke R 2017
+js/bikes/exc250.js           KTM 250 EXC 2T 2009 (en horas de motor)
+js/app.js                    Lógica (cálculo de próximos mantenimientos, historial, etc.)
+js/store.js                  Calendario de avisos compartido con el service worker (IndexedDB)
+sw.js                        Service worker (uso sin conexión y avisos en segundo plano)
 ```
 
-Para ajustar intervalos o pares de apriete, edita `js/data.js`.
+Para ajustar intervalos o pares de apriete, edita el archivo de la moto en `js/bikes/`. Para añadir otra moto, crea un archivo nuevo con el mismo formato (se explica en `js/bikes/common.js`), añádelo en `index.html` y en `sw.js`.
 
-## Aviso
+## Fuentes y aviso
 
-Los datos son orientativos y están basados en el manual de servicio de la GSX-R 600 K6. Comprueba siempre los valores críticos (pares de apriete, holguras, medidas de llaves) en el manual de taller de tu unidad. Si no te ves seguro con un trabajo, acude a un taller.
+- GSX-R 600 K6: manual de servicio de Suzuki.
+- 1290 Super Duke R 2017: manual de usuario oficial de KTM (plan de mantenimiento, capacidades y pares de apriete).
+- 250 EXC 2009: manual de usuario oficial de KTM 2009 para 125–300 EXC/XC, plan para **uso de ocio** (en competición los intervalos son más cortos).
+
+Los datos son orientativos. Comprueba siempre los valores críticos (pares de apriete, holguras, medidas de llaves) en el manual de taller de tu unidad. Si no te ves seguro con un trabajo, acude a un taller.

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>GSX-R Garage</title>
-  <meta name="description" content="Mantenimiento de la Suzuki GSX-R 600 K6: historial, próximos servicios y guías con pares de apriete." />
+  <title>Garage · Mantenimiento de motos</title>
+  <meta name="description" content="Mantenimiento de tus motos (Suzuki GSX-R 600 K6, KTM 1290 Super Duke R, KTM 250 EXC): historial, próximos servicios y guías con pares de apriete." />
   <meta name="theme-color" content="#0a0e16" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
@@ -16,16 +16,19 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><use href="#logo" /></svg>
-      <div>
-        <div class="brand-title">GSX-R <span>Garage</span></div>
-        <div class="brand-sub">Suzuki GSX-R 600 K6</div>
-      </div>
+    <div class="bike-picker">
+      <button class="brand" id="bikeBtn" aria-haspopup="listbox" aria-expanded="false" aria-controls="bikeMenu" aria-label="Cambiar de moto">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><use href="#logo" /></svg>
+        <span class="brand-text">
+          <span class="brand-title"><span id="bikeName">GSX-R 600</span><span class="caret" aria-hidden="true">▾</span></span>
+          <span class="brand-sub" id="bikeModel">Suzuki GSX-R 600 K6</span>
+        </span>
+      </button>
+      <div class="bike-menu" id="bikeMenu" role="listbox" aria-label="Tus motos" hidden></div>
     </div>
-    <button class="odo" id="odoBtn" aria-label="Actualizar kilometraje">
-      <span class="odo-label">Cuentakilómetros</span>
-      <span class="odo-value"><span id="odoValue">0</span> <small>km</small></span>
+    <button class="odo" id="odoBtn" aria-label="Actualizar contador">
+      <span class="odo-label" id="odoLabel">Cuentakilómetros</span>
+      <span class="odo-value"><span id="odoValue">0</span> <small id="odoUnit">km</small></span>
       <span class="odo-edit">Actualizar ✎</span>
     </button>
   </header>
@@ -57,14 +60,14 @@
       <div class="section-head">
         <h2>Plan de mantenimiento</h2>
       </div>
-      <p class="muted">Intervalos del fabricante para la GSX-R 600 K6. Toca cualquier tarea para ver cómo hacerla, herramientas y pares de apriete.</p>
+      <p class="muted" id="planIntro"></p>
       <div class="chips" id="planFilters"></div>
       <div class="task-list" id="planList"></div>
     </section>
 
     <!-- FICHA -->
     <section class="view" id="view-specs">
-      <div class="section-head"><h2>Ficha técnica</h2></div>
+      <div class="section-head"><h2 id="specsTitle">Ficha técnica</h2></div>
       <div class="card"><dl class="specs" id="specsList"></dl></div>
 
       <div class="section-head"><h2>Pares de apriete</h2></div>
@@ -73,14 +76,14 @@
 
       <div class="section-head"><h2>Copia de seguridad</h2></div>
       <div class="card backup">
-        <p class="muted">Tus datos se guardan en este dispositivo. Exporta una copia de vez en cuando o para pasarlos a otro móvil/PC.</p>
+        <p class="muted">Tus datos se guardan en este dispositivo. Exporta una copia (incluye todas tus motos) de vez en cuando o para pasarlos a otro móvil/PC. "Borrar" sólo afecta a la moto seleccionada.</p>
         <div class="row">
           <button class="btn" id="exportBtn">⤓ Exportar</button>
           <label class="btn">⤒ Importar<input type="file" id="importInput" accept="application/json" hidden /></label>
-          <button class="btn btn-danger" id="resetBtn">Borrar todo</button>
+          <button class="btn btn-danger" id="resetBtn">Borrar esta moto</button>
         </div>
       </div>
-      <p class="disclaimer">Datos orientativos basados en el manual de servicio de la GSX-R 600 K6. Comprueba siempre los valores críticos (pares, holguras, medidas de llaves) en el manual de taller de tu unidad. Si no te ves seguro con un trabajo, acude a un taller.</p>
+      <p class="disclaimer" id="disclaimer"></p>
     </section>
   </main>
 
@@ -111,7 +114,10 @@
     </symbol>
   </svg>
 
-  <script src="js/data.js"></script>
+  <script src="js/bikes/common.js"></script>
+  <script src="js/bikes/gsxr600k6.js"></script>
+  <script src="js/bikes/superduke1290r.js"></script>
+  <script src="js/bikes/exc250.js"></script>
   <script src="js/store.js"></script>
   <script src="js/app.js"></script>
 </body>
