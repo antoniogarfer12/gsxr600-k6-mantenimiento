@@ -183,10 +183,12 @@ const RouteMap = {
     const css = document.createElement('link');
     css.rel = 'stylesheet';
     css.href = base + 'leaflet.min.css';
+    css.crossOrigin = 'anonymous'; // en modo CORS el service worker puede guardarla para usarla sin conexión
     document.head.append(css);
     this.loading = new Promise((resolve, reject) => {
       const js = document.createElement('script');
       js.src = base + 'leaflet.min.js';
+      js.crossOrigin = 'anonymous';
       js.onload = resolve;
       js.onerror = () => { this.loading = null; reject(new Error('No se pudo cargar el mapa')); };
       document.head.append(js);

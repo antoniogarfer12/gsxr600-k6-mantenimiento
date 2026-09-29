@@ -1,7 +1,7 @@
 // Service worker: permite usar la app sin conexión y avisa de los mantenimientos
 importScripts('js/store.js');
 
-const CACHE = 'gsxr-garage-v6';
+const CACHE = 'gsxr-garage-v7';
 const ASSETS = [
   './',
   'index.html',
