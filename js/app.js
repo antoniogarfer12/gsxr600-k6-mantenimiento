@@ -24,6 +24,7 @@
   let bike, state, U; // moto seleccionada, sus datos y su unidad
   setBike(store.current);
   let planFilter = 'all';
+  let detailMap = null; // mapa abierto en el detalle de una ruta
 
   function normalizeBike(data, def) {
     const before = Number(data.before);
@@ -40,10 +41,19 @@
     const r = { ...DEFAULT_REMINDERS, ...(data.reminders || {}) };
     for (const k of ['daysBefore', 'odoDays']) r[k] = Math.max(0, Number(r[k]) || 0);
     const bikes = Object.fromEntries(BIKES.map((b) => [b.id, normalizeBike((data.bikes || {})[b.id] || {}, b)]));
+    // routes: resumen de cada ruta { id, bikeId, name, startedAt, dist (m), moving (s), total (s), max (m/s), added }
+    // (los puntos del recorrido van en IndexedDB con la clave "route:<id>")
+    const routes = (Array.isArray(data.routes) ? data.routes : [])
+      .filter((x) => x && x.id && BIKE_MAP[x.bikeId] && Number.isFinite(Number(x.dist)))
+      .map((x) => ({
+        id: String(x.id), bikeId: x.bikeId, name: String(x.name || ''), startedAt: Number(x.startedAt) || 0,
+        dist: Number(x.dist), moving: Number(x.moving) || 0, total: Number(x.total) || 0, max: Number(x.max) || 0, added: Number(x.added) || 0,
+      }));
     return {
       current: BIKE_MAP[data.current] ? data.current : BIKES[0].id,
       bikes,
       reminders: { enabled: !!r.enabled, daysBefore: r.daysBefore, odoDays: r.odoDays },
+      routes,
     };
   }
   // Datos de la versión con una sola moto: eran todos de la GSX-R
@@ -426,6 +436,7 @@
     renderHome();
     renderHistory();
     renderPlan();
+    renderRoutes();
     syncReminders();
   }
 
@@ -438,6 +449,7 @@
     document.body.style.overflow = 'hidden';
   }
   function closeModal() {
+    if (detailMap) { detailMap.remove(); detailMap = null; }
     $('#modal').classList.remove('open');
     $('#modal').setAttribute('aria-hidden', 'true');
     document.body.style.overflow = '';
@@ -841,7 +853,377 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
     window.scrollTo({ top: 0 });
+    if (name === 'routes' && liveMap) setTimeout(() => liveMap && liveMap.invalidateSize(), 50);
     try { sessionStorage.setItem('gsxr-view', name); } catch (e) { /* ignorar */ }
+  }
+
+  // ---------- Rutas ----------
+  // Grabación en curso: se guarda en IndexedDB ("route-active") cada pocos segundos para
+  // poder recuperarla si se cierra la app. Al terminar pasa a la pantalla de guardar.
+  let recorder = null;
+  let recordBikeId = null;
+  let recTimer = null;
+  let liveMap = null;
+  let posMarker = null;
+  let follow = true;
+  let lastPersist = 0;
+  let pendingRoute = null; // ruta a medias o terminada sin guardar
+
+  const fmtDist = (m) => (m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(m < 100000 ? 1 : 0).replace('.', ',')} km`);
+  const kmh = (ms) => Math.round(ms * 3.6);
+  const fmtDuration = (sec) => {
+    const s = Math.round(sec);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h ? `${h} h ${pad(m)} min` : m ? `${m} min` : `${s} s`;
+  };
+  const fmtClock = (sec) => { const s = Math.max(0, Math.floor(sec)); return `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`; };
+  const fmtDateTime = (ms) => { const d = new Date(ms); return `${fmtDate(isoOf(d))} · ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const avgOf = (r) => (r.moving > 0 ? r.dist / r.moving : 0);
+  const routesOf = (id) => store.routes.filter((r) => r.bikeId === id).sort((a, b) => b.startedAt - a.startedAt);
+
+  function renderRoutes() {
+    $('.tab[data-view="routes"]').classList.toggle('recording', !!recorder);
+    if (recorder) return updateRecording();
+    const list = routesOf(bike.id);
+    const tot = list.reduce((a, r) => ({ dist: a.dist + r.dist, moving: a.moving + r.moving }), { dist: 0, moving: 0 });
+    let pending = '';
+    if (pendingRoute) {
+      const p = pendingRoute;
+      pending = `
+        <div class="nudge pending-route">
+          <span>⏺ Tienes una ruta ${p.stopped ? 'terminada sin guardar' : 'sin terminar'} de la ${esc(BIKE_MAP[p.bikeId].short)} (${fmtDist(Geo.stats(p.snap.segments).dist)}, ${fmtDateTime(p.snap.startedAt)}).</span>
+          <div class="row">
+            ${p.stopped ? '' : '<button class="btn btn-primary" data-action="route-continue">Continuar</button>'}
+            <button class="btn ${p.stopped ? 'btn-primary' : ''}" data-action="route-save-pending">Guardar</button>
+            <button class="btn btn-ghost" data-action="route-discard">Descartar</button>
+          </div>
+        </div>`;
+    }
+    $('#routesBody').innerHTML = `
+      ${pending}
+      <div class="route-summary">
+        <div class="route-summary-title">Rutas de la ${esc(bike.short)}</div>
+        <div class="route-stats">
+          <div><b>${fmtDist(tot.dist)}</b><span>Recorridos</span></div>
+          <div><b>${list.length}</b><span>Ruta${list.length === 1 ? '' : 's'}</span></div>
+          <div><b>${fmtDuration(tot.moving)}</b><span>En marcha</span></div>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block btn-rec" data-action="route-start">▶ Empezar ruta con la ${esc(bike.short)}</button>
+      <label class="btn btn-block btn-ghost">⤒ Importar GPX de otra app<input type="file" id="gpxInput" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden /></label>
+      <p class="hint route-hint">Mientras grabas, deja la app abierta: mantiene la pantalla encendida. Si bloqueas el móvil o cambias de app, el navegador deja de dar la posición y ese tramo se une en línea recta. Para llevar el móvil guardado, graba con otra app (Google Maps, Strava, Wikiloc…) e importa aquí el GPX.</p>
+      <div class="section-head"><h2>Historial de rutas</h2></div>
+      ${list.length ? `<div class="route-list">${list.map(routeCard).join('')}</div>` : `
+        <div class="empty"><div class="empty-icon">🗺️</div>
+          <p>Aún no hay rutas de la ${esc(bike.short)}.</p>
+          <p class="muted">Pulsa "Empezar ruta" antes de salir y "Terminar" al llegar.</p>
+        </div>`}`;
+  }
+
+  function routeCard(r) {
+    return `
+      <button class="route-card" data-route="${r.id}">
+        <span class="route-card-main">
+          <b>${esc(r.name || 'Ruta')}</b>
+          <span class="hint">${fmtDateTime(r.startedAt)}</span>
+        </span>
+        <span class="route-card-stats">
+          <b>${fmtDist(r.dist)}</b>
+          <span class="hint">${r.moving ? `${fmtDuration(r.moving)} · ${kmh(avgOf(r))} km/h` : 'sin tiempos'}</span>
+        </span>
+      </button>`;
+  }
+
+  // --- Grabación ---
+  function startRoute(resume) {
+    if (!('geolocation' in navigator)) return toast('Este navegador no permite usar el GPS');
+    recordBikeId = resume ? resume.bikeId : bike.id;
+    recorder = new RouteRecorder({ onUpdate: onRecUpdate, onError: onRecError });
+    recorder.start(resume && resume.snap);
+    pendingRoute = null;
+    follow = true;
+    buildRecordingPanel();
+    recTimer = setInterval(() => updateRecording(), 1000);
+    persistRoute();
+    toast('⏺ Grabando ruta');
+  }
+
+  function buildRecordingPanel() {
+    $('.tab[data-view="routes"]').classList.add('recording');
+    $('#routesBody').innerHTML = `
+      <div class="rec-panel">
+        <div class="rec-head"><span class="rec-dot"></span><span>Grabando con la <b>${esc(BIKE_MAP[recordBikeId].short)}</b></span><span class="hint" id="recStatus">Buscando GPS…</span></div>
+        <div class="rec-map" id="recMap"><div class="map-msg">Cargando mapa…</div></div>
+        <button class="btn btn-block btn-ghost" data-action="route-center" id="recCenter" hidden>◎ Volver a centrar el mapa</button>
+        <div class="rec-stats">
+          <div class="rec-big"><b id="recDist">0,0</b><span>km recorridos</span></div>
+          <div><b id="recMoving">0:00:00</b><span>En marcha</span></div>
+          <div><b id="recAvg">0</b><span>Media km/h</span></div>
+          <div><b id="recSpeed">–</b><span>Actual km/h</span></div>
+          <div><b id="recMax">0</b><span>Máxima km/h</span></div>
+          <div><b id="recTotal">0:00:00</b><span>Tiempo total</span></div>
+        </div>
+        <div class="rec-buttons">
+          <button class="btn" data-action="route-pause" id="recPause">⏸ Pausar</button>
+          <button class="btn btn-danger" data-action="route-stop">■ Terminar</button>
+        </div>
+      </div>`;
+    RouteMap.load().then(() => {
+      if (!recorder || !$('#recMap')) return;
+      $('#recMap').innerHTML = '';
+      liveMap = RouteMap.create($('#recMap'));
+      liveMap.on('dragstart', () => { follow = false; $('#recCenter').hidden = false; });
+      updateRecording(true);
+    }).catch(() => {
+      const el = $('#recMap');
+      if (el) el.innerHTML = '<div class="map-msg">Sin conexión no se puede mostrar el mapa, pero la ruta se sigue grabando.</div>';
+    });
+  }
+
+  function onRecUpdate(rec, added) {
+    if (added && Date.now() - lastPersist > 10000) persistRoute();
+    updateRecording(added);
+  }
+
+  function onRecError(err) {
+    if (err.code === 1) {
+      stopRecorder();
+      renderRoutes();
+      return toast('Sin permiso de ubicación: actívalo en los ajustes del navegador');
+    }
+    const el = $('#recStatus');
+    if (el) el.textContent = 'Sin señal GPS…';
+  }
+
+  function updateRecording(redraw) {
+    if (!recorder || !$('#recDist')) return;
+    const st = Geo.stats(recorder.segments);
+    const cur = recorder.current;
+    $('#recDist').textContent = (st.dist / 1000).toFixed(1).replace('.', ',');
+    $('#recMoving').textContent = fmtClock(st.moving);
+    $('#recAvg').textContent = st.moving > 0 ? kmh(st.dist / st.moving) : 0;
+    $('#recSpeed').textContent = recorder.paused || !cur || cur.speed === null ? '–' : kmh(cur.speed);
+    $('#recMax').textContent = kmh(Math.max(recorder.maxSpeed, st.max));
+    $('#recTotal').textContent = fmtClock(recorder.elapsed());
+    $('#recStatus').textContent = recorder.paused ? 'En pausa'
+      : !cur ? 'Buscando GPS…'
+      : cur.accuracy > 35 ? `Señal débil (±${Math.round(cur.accuracy)} m)`
+      : `GPS ±${Math.round(cur.accuracy)} m`;
+    $('#recPause').textContent = recorder.paused ? '▶ Seguir' : '⏸ Pausar';
+    $('.rec-panel').classList.toggle('paused', recorder.paused);
+    if (!liveMap) return;
+    if (redraw) RouteMap.draw(liveMap, recorder.segments, { color: BIKE_MAP[recordBikeId].brand === 'ktm' ? '#ff8a33' : '#4d8dff', markers: false });
+    if (cur) {
+      const ll = [cur.lat, cur.lon];
+      if (!posMarker) posMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#1f6bff', fillOpacity: 1 }).addTo(liveMap);
+      else posMarker.setLatLng(ll);
+      if (follow) liveMap.setView(ll, Math.max(liveMap.getZoom(), 15), { animate: false });
+    }
+  }
+
+  function persistRoute() {
+    if (!recorder) return;
+    lastPersist = Date.now();
+    kv.set('route-active', { bikeId: recordBikeId, snap: recorder.snapshot() }).catch(() => {});
+  }
+
+  function stopRecorder() {
+    const snap = recorder.stop();
+    snap.endedAt = Date.now();
+    clearInterval(recTimer);
+    if (liveMap) liveMap.remove();
+    liveMap = null;
+    posMarker = null;
+    recorder = null;
+    $('.tab[data-view="routes"]').classList.remove('recording');
+    return snap;
+  }
+
+  // Borrador de ruta a partir de una grabación
+  function draftFromSnap(bikeId, snap) {
+    const st = Geo.stats(snap.segments);
+    const lastT = Math.max(0, ...snap.segments.flat().map((p) => p[2]));
+    const ended = snap.endedAt || snap.startedAt + lastT * 1000 + snap.pausedMs;
+    return {
+      bikeId, name: '', startedAt: snap.startedAt, segments: snap.segments, fromRecording: true,
+      dist: st.dist, moving: st.moving, max: Math.max(snap.maxSpeed || 0, st.max),
+      total: Math.max(0, (ended - snap.startedAt - snap.pausedMs) / 1000),
+    };
+  }
+
+  // Cuánto se sumaría al contador de una moto: km recorridos u horas en marcha (EXC)
+  function counterAmount(bikeId, d) {
+    const b = BIKE_MAP[bikeId];
+    return b.unit === 'h' ? Math.round((d.moving / 3600) * 10) / 10 : Math.round(d.dist / 1000);
+  }
+  function addToCounter(bikeId, amount) {
+    return withBike(bikeId, () => {
+      const cur = currentKm();
+      const next = Math.round((cur + amount) * 10) / 10;
+      state.odometer = next;
+      const today = todayISO();
+      state.readings = [...state.readings.filter((r) => r.date !== today), { date: today, km: next }].slice(-300);
+      return Math.round((next - cur) * 10) / 10;
+    });
+  }
+
+  function openSaveRoute(d) {
+    const stats = (x) => `
+      <div class="route-stats detail">
+        <div><b>${fmtDist(x.dist)}</b><span>Distancia</span></div>
+        <div><b>${x.moving ? fmtDuration(x.moving) : '—'}</b><span>En marcha</span></div>
+        <div><b>${x.moving ? kmh(avgOf(x)) : '—'}</b><span>Media km/h</span></div>
+        <div><b>${x.max ? kmh(x.max) : '—'}</b><span>Máxima km/h</span></div>
+      </div>`;
+    const defName = `Ruta del ${fmtDate(isoOf(new Date(d.startedAt)))}`;
+    openModal(`
+      <h2>Guardar ruta</h2>
+      ${stats(d)}
+      ${d.dist < 200 ? '<p class="hint">La ruta es muy corta. Si no quieres guardarla, descártala.</p>' : ''}
+      <form class="form" id="routeForm" novalidate>
+        <div class="field"><label for="rtBike">Moto</label>
+          <select id="rtBike">${BIKES.map((b) => `<option value="${b.id}" ${b.id === d.bikeId ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label for="rtName">Nombre</label><input id="rtName" type="text" value="${esc(d.name || defName)}" maxlength="80" /></div>
+        <label class="switch-row" id="rtAddRow">
+          <input type="checkbox" id="rtAdd" checked />
+          <span class="switch" aria-hidden="true"></span>
+          <span><b id="rtAddText"></b><span class="hint" id="rtAddHint"></span></span>
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Guardar ruta</button>
+        ${d.fromRecording ? '<button type="button" class="btn btn-ghost btn-block" data-action="route-discard">Descartar ruta</button>' : ''}
+      </form>
+    `);
+    const updateAdd = () => {
+      const id = $('#rtBike').value;
+      const b = BIKE_MAP[id];
+      const amount = counterAmount(id, d);
+      const u = UNITS[b.unit];
+      const cur = withBike(id, () => currentKm());
+      $('#rtAddRow').hidden = amount <= 0;
+      $('#rtAddText').textContent = b.unit === 'h'
+        ? `Sumar ${withBike(id, () => fmtKm(amount))} h al contador de horas de la ${b.short}`
+        : `Sumar ${withBike(id, () => fmtKm(amount))} km al cuentakilómetros de la ${b.short}`;
+      $('#rtAddHint').textContent = `${withBike(id, () => fmtKm(cur))} → ${withBike(id, () => fmtKm(cur + amount))} ${u.short}. ${b.unit === 'h' ? 'Se usa el tiempo en marcha.' : 'La distancia del GPS puede variar un poco respecto al cuentakilómetros.'} Desmárcalo si ya has actualizado el contador a mano.`;
+    };
+    $('#rtBike').addEventListener('change', updateAdd);
+    updateAdd();
+    $('#routeForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const bikeId = $('#rtBike').value;
+      const add = $('#rtAdd').checked && !$('#rtAddRow').hidden;
+      await saveRoute(d, bikeId, $('#rtName').value.trim() || defName, add);
+    });
+  }
+
+  async function saveRoute(d, bikeId, name, add) {
+    const id = uid();
+    let mapSaved = true;
+    try { await kv.set('route:' + id, d.segments); } catch (e) { mapSaved = false; }
+    const added = add ? addToCounter(bikeId, counterAmount(bikeId, d)) : 0;
+    store.routes.push({ id, bikeId, name, startedAt: d.startedAt, dist: Math.round(d.dist), moving: Math.round(d.moving), total: Math.round(d.total), max: Geo.round(d.max, 2), added });
+    save();
+    if (d.fromRecording) { pendingRoute = null; kv.del('route-active').catch(() => {}); }
+    closeModal();
+    if (bikeId !== bike.id) setBike(bikeId);
+    renderSpecs();
+    renderAll();
+    toast(mapSaved ? `✓ Ruta guardada en la ${BIKE_MAP[bikeId].short}` : '✓ Ruta guardada (sin el mapa: el almacenamiento no está disponible)');
+  }
+
+  async function discardPending() {
+    if (!confirm('¿Descartar esta ruta? No se podrá recuperar.')) return;
+    pendingRoute = null;
+    await kv.del('route-active').catch(() => {});
+    closeModal();
+    renderRoutes();
+    toast('Ruta descartada');
+  }
+
+  // --- Importar GPX ---
+  async function importGPX(file) {
+    try {
+      const g = GPX.parse(await file.text());
+      const st = Geo.stats(g.segments);
+      const lastT = Math.max(...g.segments.flat().map((p) => p[2]));
+      openSaveRoute({
+        bikeId: bike.id, name: g.name, startedAt: g.startedAt, segments: g.segments,
+        dist: st.dist, moving: g.hasTime ? st.moving : 0, max: g.hasTime ? st.max : 0, total: g.hasTime ? lastT : 0,
+      });
+    } catch (e) {
+      toast('No se pudo leer el GPX: ' + e.message);
+    }
+  }
+
+  // --- Detalle de una ruta ---
+  async function openRouteDetail(id) {
+    const r = store.routes.find((x) => x.id === id);
+    if (!r) return;
+    const b = BIKE_MAP[r.bikeId];
+    openModal(`
+      <div class="hero-kicker">${esc(b.short)} · ${fmtDateTime(r.startedAt)}</div>
+      <h2>${esc(r.name || 'Ruta')}</h2>
+      <div class="route-map" id="routeMap"><div class="map-msg">Cargando mapa…</div></div>
+      <div class="route-stats detail">
+        <div><b>${fmtDist(r.dist)}</b><span>Distancia</span></div>
+        <div><b>${r.moving ? fmtDuration(r.moving) : '—'}</b><span>En marcha</span></div>
+        <div><b>${r.moving ? kmh(avgOf(r)) : '—'}</b><span>Media km/h</span></div>
+        <div><b>${r.max ? kmh(r.max) : '—'}</b><span>Máxima km/h</span></div>
+        <div><b>${r.total ? fmtDuration(r.total) : '—'}</b><span>Tiempo total</span></div>
+        <div><b>${r.added ? `+${withBike(r.bikeId, () => fmtKm(r.added))} ${UNITS[b.unit].short}` : '—'}</b><span>Sumado al contador</span></div>
+      </div>
+      <div class="footer-row" style="margin-top:16px">
+        <button class="btn btn-block" data-action="route-gpx" data-id="${r.id}">⤓ Exportar GPX</button>
+        <button class="btn btn-danger" data-action="route-delete" data-id="${r.id}" aria-label="Eliminar ruta">🗑</button>
+      </div>
+    `);
+    const segments = await kv.get('route:' + id).catch(() => null);
+    const el = $('#routeMap');
+    if (!el) return;
+    if (!segments) { el.innerHTML = '<div class="map-msg">No hay puntos guardados de esta ruta en este dispositivo.</div>'; return; }
+    try {
+      await RouteMap.load();
+      if (!$('#routeMap')) return;
+      el.innerHTML = '';
+      detailMap = RouteMap.create(el);
+      setTimeout(() => { if (detailMap) { detailMap.invalidateSize(); RouteMap.draw(detailMap, segments, { color: b.brand === 'ktm' ? '#ff8a33' : '#4d8dff', fit: true }); } }, 300);
+    } catch (e) {
+      el.innerHTML = '<div class="map-msg">Sin conexión no se puede cargar el mapa.</div>';
+    }
+  }
+
+  async function exportRouteGPX(id) {
+    const r = store.routes.find((x) => x.id === id);
+    const segments = await kv.get('route:' + id).catch(() => null);
+    if (!r || !segments) return toast('No hay puntos guardados de esta ruta');
+    const blob = new Blob([GPX.build(r, segments)], { type: 'application/gpx+xml' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${r.bikeId}-${isoOf(new Date(r.startedAt))}.gpx`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  function deleteRoute(id) {
+    const r = store.routes.find((x) => x.id === id);
+    if (!r || !confirm(`¿Eliminar la ruta "${r.name || 'Ruta'}" (${fmtDist(r.dist)})?`)) return;
+    const b = BIKE_MAP[r.bikeId];
+    if (r.added) {
+      const txt = withBike(r.bikeId, () => fmtKm(r.added));
+      if (confirm(`Al guardarla sumaste ${txt} ${UNITS[b.unit].short} al contador de la ${b.short}. ¿Quieres restarlos?`)) {
+        withBike(r.bikeId, () => {
+          const maxEntry = state.entries.reduce((m, e) => Math.max(m, Number(e.km) || 0), 0);
+          state.odometer = Math.max(maxEntry, Math.round((state.odometer - r.added) * 10) / 10);
+        });
+      }
+    }
+    store.routes = store.routes.filter((x) => x.id !== id);
+    save();
+    kv.del('route:' + id).catch(() => {});
+    closeModal();
+    renderAll();
+    toast('Ruta eliminada');
   }
 
   // ---------- Selector de moto ----------
@@ -903,11 +1285,12 @@
     // Cerrar el selector de moto al tocar fuera
     if (!ev.target.closest('#bikeMenu, #bikeBtn') && !$('#bikeMenu').hidden) toggleBikeMenu(false);
 
-    const el = ev.target.closest('[data-guide],[data-action],[data-edit],[data-delete],[data-filter],[data-view],[data-close],[data-bike],.steps li');
+    const el = ev.target.closest('[data-guide],[data-action],[data-edit],[data-delete],[data-filter],[data-view],[data-close],[data-bike],[data-route],.steps li');
     if (!el) return;
 
     if (el.matches('.steps li')) return el.classList.toggle('done');
     if (el.dataset.bike) return selectBike(el.dataset.bike);
+    if (el.dataset.route) return openRouteDetail(el.dataset.route);
     if (el.hasAttribute('data-close')) return closeModal();
     if (el.dataset.view) return showView(el.dataset.view);
     if (el.dataset.filter) { planFilter = el.dataset.filter; return renderPlan(); }
@@ -930,6 +1313,21 @@
       downloadICS(events, el.dataset.task ? `${bike.id}-${el.dataset.task}.ics` : 'motos-mantenimientos.ics');
       return toast('📅 Abre el archivo descargado para añadirlo a tu calendario');
     }
+    if (el.dataset.action === 'route-start') return startRoute();
+    if (el.dataset.action === 'route-pause') { recorder.paused ? recorder.resume() : recorder.pause(); persistRoute(); return updateRecording(true); }
+    if (el.dataset.action === 'route-center') { follow = true; $('#recCenter').hidden = true; return updateRecording(); }
+    if (el.dataset.action === 'route-stop') {
+      if (!confirm('¿Terminar la ruta?')) return;
+      pendingRoute = { bikeId: recordBikeId, snap: stopRecorder(), stopped: true };
+      kv.set('route-active', pendingRoute).catch(() => {});
+      renderRoutes();
+      return openSaveRoute(draftFromSnap(pendingRoute.bikeId, pendingRoute.snap));
+    }
+    if (el.dataset.action === 'route-continue') return startRoute(pendingRoute);
+    if (el.dataset.action === 'route-save-pending') return openSaveRoute(draftFromSnap(pendingRoute.bikeId, pendingRoute.snap));
+    if (el.dataset.action === 'route-discard') return discardPending();
+    if (el.dataset.action === 'route-gpx') return exportRouteGPX(el.dataset.id);
+    if (el.dataset.action === 'route-delete') return deleteRoute(el.dataset.id);
     if (el.dataset.action === 'test-notif') {
       return showNotification({ tag: 'gsxr-test', title: '🏍️ Garage', body: 'Así te llegarán los avisos de mantenimiento.' })
         .catch(() => toast('No se pudo mostrar la notificación'));
@@ -943,11 +1341,21 @@
     if (!$('#bikeMenu').hidden) return toggleBikeMenu(false);
     closeModal();
   });
+  document.addEventListener('change', (ev) => {
+    if (ev.target.id !== 'gpxInput' || !ev.target.files[0]) return;
+    importGPX(ev.target.files[0]);
+    ev.target.value = '';
+  });
   $('#torqueSearch').addEventListener('input', (e) => renderTorques(e.target.value.trim()));
 
   // Copia de seguridad (todas las motos)
-  $('#exportBtn').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify({ app: 'revimotos-garage', version: 2, exported: new Date().toISOString(), ...store }, null, 2)], { type: 'application/json' });
+  $('#exportBtn').addEventListener('click', async () => {
+    const routePoints = {};
+    for (const r of store.routes) {
+      const pts = await kv.get('route:' + r.id).catch(() => null);
+      if (pts) routePoints[r.id] = pts;
+    }
+    const blob = new Blob([JSON.stringify({ app: 'revimotos-garage', version: 2, exported: new Date().toISOString(), ...store, routePoints })], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `motos-mantenimiento-${todayISO()}.json`;
@@ -974,8 +1382,12 @@
           bikes[b.id] = { ...src, entries: validEntries(src.entries, b) };
         }
         const total = BIKES.reduce((n, b) => n + bikes[b.id].entries.length, 0);
-        if (!confirm(`Se importarán ${total} registros de todas las motos y se reemplazarán los datos actuales. ¿Continuar?`)) return;
+        const nRoutes = Array.isArray(data.routes) ? data.routes.length : 0;
+        if (!confirm(`Se importarán ${total} registros${nRoutes ? ` y ${nRoutes} rutas` : ''} de todas las motos y se reemplazarán los datos actuales. ¿Continuar?`)) return;
         next = normalizeStore({ ...data, bikes });
+        if (data.routePoints && typeof data.routePoints === 'object') {
+          for (const r of next.routes) if (Array.isArray(data.routePoints[r.id])) await kv.set('route:' + r.id, data.routePoints[r.id]).catch(() => {});
+        }
       } else if (Array.isArray(data.entries)) {
         // Copia de la versión anterior de la app: sólo tenía la GSX-R
         const gsxr = BIKE_MAP.gsxr600k6;
@@ -996,8 +1408,10 @@
     }
   });
   $('#resetBtn').addEventListener('click', () => {
-    if (confirm(`¿Borrar TODO el historial y ${bike.unit === 'h' ? 'las horas' : 'los kilómetros'} de la ${bike.name}? Las otras motos no se tocan. Esta acción no se puede deshacer.`)) {
+    if (confirm(`¿Borrar TODO el historial y ${bike.unit === 'h' ? 'las horas' : 'los kilómetros'} de la ${bike.name}, incluidas sus rutas? Las otras motos no se tocan. Esta acción no se puede deshacer.`)) {
       store.bikes[bike.id] = normalizeBike({ before: state.before }, bike);
+      for (const r of routesOf(bike.id)) kv.del('route:' + r.id).catch(() => {});
+      store.routes = store.routes.filter((r) => r.bikeId !== bike.id);
       setBike(bike.id);
       save(); renderAll(); toast('Datos borrados');
     }
@@ -1011,6 +1425,12 @@
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').then(updateBackgroundSync).catch(() => {});
   }
+
+  // Ruta a medias de una sesión anterior (se cerró la app mientras grababa)
+  kv.get('route-active').then((p) => {
+    if (p && p.snap && Array.isArray(p.snap.segments) && BIKE_MAP[p.bikeId] && !recorder) { pendingRoute = p; renderRoutes(); }
+  }).catch(() => {});
+  window.addEventListener('pagehide', persistRoute);
 
   // Al volver a la app (p. ej. al día siguiente) se recalculan los avisos
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') renderAll(); });

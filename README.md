@@ -18,12 +18,14 @@ Se cambia de moto con el desplegable de arriba a la izquierda. Funciona en el na
 ## Qué hace
 
 - **Varias motos**: cada una con su historial, su contador (km u horas de motor) y su plan de mantenimiento. Las KTM usan el color naranja.
+- **Rutas con GPS**: graba la ruta con el móvil y la ves en el mapa con los km, el tiempo en marcha y las velocidades media y máxima. Cada ruta se guarda en la moto elegida, que acumula sus km recorridos, y opcionalmente los suma a su cuentakilómetros (en la EXC, las horas en marcha). También importa y exporta GPX.
+  - Mientras graba, la app mantiene la pantalla encendida. Si se bloquea el móvil o se cambia de app, el navegador deja de dar la posición y ese tramo queda en línea recta: para rutas con el móvil guardado, graba con otra app e importa el GPX.
 - **Historial de mantenimiento**: registra fecha, km/horas, trabajos realizados, coste y notas.
 - **Qué toca y cuándo**: a partir de cada mantenimiento calcula la próxima revisión de cada tarea y cuánto falta (km, horas o meses), con avisos de *vencido* / *pronto*.
 - **Recordatorios**: notificaciones cuando se acerca un mantenimiento de cualquiera de tus motos (antelación configurable), aviso para actualizar el contador y exportación de los próximos mantenimientos al calendario del móvil (.ics, funciona también en iPhone). Con tus lecturas del contador calcula tu ritmo de uso y estima las fechas.
 - **Guía de cada tarea**: paso a paso, herramientas y llaves necesarias, recambios y **pares de apriete**.
 - **Ficha técnica** de cada moto con especificaciones y buscador de pares de apriete.
-- **Copia de seguridad**: exporta/importa los datos de todas las motos en JSON (también importa copias de la versión anterior, que sólo tenía la GSX-R).
+- **Copia de seguridad**: exporta/importa los datos de todas las motos en JSON, rutas incluidas (también importa copias de la versión anterior, que sólo tenía la GSX-R).
 
 ## Instalar en el móvil
 
@@ -46,6 +48,7 @@ js/bikes/superduke1290r.js   KTM 1290 Super Duke R 2017
 js/bikes/superadventure1290s.js  KTM 1290 Super Adventure S 2022
 js/bikes/exc250.js           KTM 250 EXC 2T 2009 (en horas de motor)
 js/app.js                    Lógica (cálculo de próximos mantenimientos, historial, etc.)
+js/routes.js                 Rutas: GPS, cálculos, GPX y mapa (Leaflet + OpenStreetMap)
 js/store.js                  Calendario de avisos compartido con el service worker (IndexedDB)
 sw.js                        Service worker (uso sin conexión y avisos en segundo plano)
 ```

@@ -205,7 +205,7 @@ main { max-width: 900px; margin: 0 auto; padding: 16px; }
 /* ---------- Tab bar ---------- */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   background: rgba(15, 21, 34, .92); backdrop-filter: blur(14px);
   border-top: 1px solid var(--line);
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
@@ -389,4 +389,53 @@ main { max-width: 900px; margin: 0 auto; padding: 16px; }
   .brand-title { font-size: 1.25rem; }
   .brand .caret { margin-left: 4px; }
   .odo-label { display: none; }
+}
+
+/* ---------- Rutas ---------- */
+.tabbar .tab { position: relative; }
+.tab.recording::after { content: ''; position: absolute; top: 4px; right: calc(50% - 16px); width: 9px; height: 9px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--bg-2); animation: blink 1.2s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.route-summary { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+.route-summary-title { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin-bottom: 10px; }
+.route-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.route-stats > div { display: grid; gap: 2px; min-width: 0; }
+.route-stats b { font-family: var(--display); font-size: 1.5rem; line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.route-stats span { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.route-stats.detail { grid-template-columns: repeat(2, 1fr); background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-top: 12px; row-gap: 12px; }
+.btn-rec { min-height: 60px; font-size: 1.1rem; margin-bottom: 8px; }
+.route-hint { margin: 12px 2px 0; line-height: 1.5; }
+.route-list { display: grid; gap: 8px; }
+.route-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; cursor: pointer; min-height: 64px; }
+.route-card:hover { border-color: var(--blue-2); }
+.route-card-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.route-card-main b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.route-card-stats { display: grid; justify-items: end; gap: 2px; text-align: right; }
+.route-card-stats b { font-family: var(--display); font-size: 1.3rem; white-space: nowrap; }
+.pending-route { display: grid; }
+.pending-route .row .btn { flex: 1; }
+
+.rec-panel { display: grid; gap: 10px; }
+.rec-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .95rem; }
+.rec-head .hint { margin-left: auto; }
+.rec-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--danger); animation: blink 1.2s infinite; flex: none; }
+.rec-panel.paused .rec-dot { animation: none; background: var(--warn); }
+.rec-map, .route-map { height: 42vh; min-height: 240px; border-radius: 16px; overflow: hidden; border: 1px solid var(--line); background: var(--bg-2); position: relative; z-index: 0; }
+.route-map { height: 36vh; min-height: 220px; margin-top: 12px; }
+.map-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; color: var(--muted); font-size: .9rem; }
+.rec-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.rec-stats > div { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 8px; display: grid; gap: 2px; text-align: center; min-width: 0; }
+.rec-stats b { font-family: var(--display); font-size: 1.5rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.rec-stats span { font-size: .66rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.rec-stats .rec-big { grid-column: 1 / -1; }
+.rec-stats .rec-big b { font-size: 3rem; }
+.rec-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rec-buttons .btn { min-height: 60px; font-size: 1.05rem; }
+.leaflet-container { background: var(--bg-2); font-family: var(--sans); }
+.map-tiles { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.9) saturate(.5); }
+.leaflet-control-attribution { font-size: 9px; background: rgba(0, 0, 0, .55) !important; color: #aaa; }
+.leaflet-control-attribution a { color: #ccc; }
+@media (max-width: 360px) {
+  .tab { font-size: .64rem; padding: 6px 2px; }
+  .route-stats b, .rec-stats b { font-size: 1.25rem; }
+  .rec-stats .rec-big b { font-size: 2.5rem; }
 }

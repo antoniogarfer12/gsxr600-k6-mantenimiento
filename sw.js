@@ -1,7 +1,7 @@
 // Service worker: permite usar la app sin conexión y avisa de los mantenimientos
 importScripts('js/store.js');
 
-const CACHE = 'gsxr-garage-v5';
+const CACHE = 'gsxr-garage-v6';
 const ASSETS = [
   './',
   'index.html',
@@ -14,6 +14,7 @@ const ASSETS = [
   'js/bikes/superadventure1290s.js',
   'js/bikes/exc250.js',
   'js/store.js',
+  'js/routes.js',
   'js/app.js',
   'manifest.webmanifest',
   'icons/icon.svg',
@@ -39,7 +40,8 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        if (res.ok && new URL(e.request.url).origin === location.origin) {
+        // Se guardan los archivos de la app y la librería del mapa (no las teselas: ocupan mucho)
+        if (res.ok && (new URL(e.request.url).origin === location.origin || e.request.url.startsWith('https://cdnjs.cloudflare.com/ajax/libs/leaflet/'))) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy));
         }
